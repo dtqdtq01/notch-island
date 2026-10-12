@@ -106,3 +106,45 @@ final class HookWatcher {
         repairs.removeAll()
     }
 }
+
+/// 자리를 비웠다 돌아왔을 때 기다리는 세션이 있으면 다시 알려준다.
+final class IdleWatcher {
+    private let prefs: Prefs
+    private let store: SessionStore
+    private let onSound: (SoundCategory) -> Void
+    private var timer: Timer?
+    private var awaySince: Date?
+
+    init(prefs: Prefs, store: SessionStore, onSound: @escaping (SoundCategory) -> Void) {
+        self.prefs = prefs
+        self.store = store
+        self.onSound = onSound
+        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.check() }
+    }
+
+    /// 마지막 키보드·마우스 입력 이후 초
+    static var idleSeconds: TimeInterval {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+    }
+
+    func check(idle: TimeInterval = IdleWatcher.idleSeconds, now: Date = Date()) {
+        guard prefs.idleReminder else { awaySince = nil; return }
+        if idle >= prefs.idleMinutes * 60 {
+            if awaySince == nil { awaySince = now.addingTimeInterval(-idle) }
+            return
+        }
+        guard let since = awaySince, idle < 10 else { return }
+        awaySince = nil
+        let waiting = store.sessions.values.filter { session in
+            switch session.status {
+            case .waitingApproval, .waitingInput: return true
+            case .done, .error: return session.updatedAt >= since
+            default: return false
+            }
+        }
+        guard !waiting.isEmpty else { return }
+        let names = waiting.prefix(3).map(\.projectName).joined(separator: ", ")
+        store.notify("자리 비운 사이 \(waiting.count)개 세션이 기다려요", names)
+        onSound(.idleReminder)
+    }
+}

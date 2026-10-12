@@ -99,7 +99,7 @@ struct NotchRootView: View {
     private func content(_ mode: NotchMode) -> some View {
         switch mode {
         case .collapsed:
-            CollapsedView(store: store, notchWidth: model.geometry.notchWidth)
+            CollapsedView(store: store, notchWidth: model.geometry.notchWidth, detailed: prefs.detailedLayout)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onToggle)
                 .transition(.opacity.animation(.easeOut(duration: 0.15)))
@@ -158,27 +158,61 @@ struct StatusDot: View {
 struct CollapsedView: View {
     @ObservedObject var store: SessionStore
     let notchWidth: CGFloat
+    let detailed: Bool
 
     var body: some View {
-        if let status = store.mostUrgent {
+        if let top = store.sortedSessions.first {
+            let side = Metrics.sideWidth(detailed: detailed)
             HStack(spacing: 0) {
-                StatusDot(status: status)
-                    .frame(width: Metrics.sideWidth)
-                Spacer().frame(width: notchWidth)
-                Group {
-                    if !store.pending.isEmpty {
-                        Text("\(store.pending.count)!").foregroundStyle(.orange)
-                    } else {
-                        Text("\(store.sessions.count)").foregroundStyle(.white.opacity(0.8))
+                // 왼쪽: 상태 점 (+ 자세히: 가장 급한 세션 이름)
+                HStack(spacing: 6) {
+                    StatusDot(status: top.status)
+                    if detailed {
+                        Text(top.projectName)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.9))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .contentTransition(.opacity)
                     }
                 }
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .contentTransition(.numericText())
-                .animation(NotchMotion.snappy, value: store.sessions.count)
-                .animation(NotchMotion.snappy, value: store.pending.count)
-                .frame(width: Metrics.sideWidth)
+                .padding(.leading, detailed ? 12 : 0)
+                .frame(width: side, alignment: detailed ? .leading : .center)
+                Spacer().frame(width: notchWidth)
+                // 오른쪽: 개수 (+ 자세히: 상태 글자)
+                HStack(spacing: 4) {
+                    if detailed {
+                        Text(store.pending.isEmpty ? top.status.label : "승인 \(store.pending.count)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(store.pending.isEmpty ? top.status.color : .orange)
+                            .lineLimit(1)
+                            .contentTransition(.opacity)
+                        if store.sessions.count > 1 {
+                            Text("+\(store.sessions.count - 1)")
+                                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.secondary)
+                                .contentTransition(.numericText())
+                        }
+                    } else {
+                        Group {
+                            if !store.pending.isEmpty {
+                                Text("\(store.pending.count)!").foregroundStyle(.orange)
+                            } else {
+                                Text("\(store.sessions.count)").foregroundStyle(.white.opacity(0.8))
+                            }
+                        }
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .contentTransition(.numericText())
+                    }
+                }
+                .padding(.trailing, detailed ? 12 : 0)
+                .frame(width: side, alignment: detailed ? .trailing : .center)
             }
             .frame(maxHeight: .infinity)
+            .animation(NotchMotion.snappy, value: store.sessions.count)
+            .animation(NotchMotion.snappy, value: store.pending.count)
+            .animation(.easeInOut(duration: 0.2), value: top.id)
+            .animation(.easeInOut(duration: 0.2), value: top.status)
         } else {
             Color.clear
         }
@@ -437,9 +471,9 @@ struct RequestCard: View {
             case .permission:
                 PermissionBody(request: request) { store.decide(request, $0) }
             case .question(let questions):
-                QuestionBody(questions: questions) { store.decide(request, $0) }
+                QuestionBody(questions: questions, draft: store.draft(for: request)) { store.decide(request, $0) }
             case .plan(let plan):
-                PlanBody(plan: plan, hasSuggestions: !(request.suggestions ?? []).isEmpty) { store.decide(request, $0) }
+                PlanBody(plan: plan, draft: store.draft(for: request)) { store.decide(request, $0) }
             }
         }
         .padding(10)
@@ -514,8 +548,15 @@ struct PermissionBody: View {
 
 struct PlanBody: View {
     let plan: String
-    let hasSuggestions: Bool
+    @ObservedObject var draft: RequestDraft
     let onDecide: (Decision) -> Void
+
+    /// 계획 승인 뒤 권한 모드 (Claude Code의 setMode 값)
+    private static let modes: [(id: String, title: String, help: String)] = [
+        ("default", "하나씩 승인", "모든 작업을 확인 · 가장 안전"),
+        ("acceptEdits", "편집 자동", "파일 편집은 자동 허용"),
+        ("bypassPermissions", "모두 허용", "권한 확인을 모두 건너뜀"),
+    ]
 
     var body: some View {
         ScrollView {
@@ -526,19 +567,35 @@ struct PlanBody: View {
                 .textSelection(.enabled)
         }
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
-        HStack(spacing: 8) {
-            Button("계속 계획") { onDecide(.deny) }
-                .buttonStyle(PillButton(tint: .red))
-            Button("터미널에서") { onDecide(.terminal) }
-                .buttonStyle(PillButton(tint: .gray))
-            Spacer()
-            if hasSuggestions {
-                Button("승인 + 자동 편집") { onDecide(.always) }
-                    .buttonStyle(PillButton(tint: .blue))
+        HStack(spacing: 4) {
+            ForEach(Self.modes, id: \.id) { mode in
+                Button { draft.planMode = mode.id } label: {
+                    Text(mode.title)
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(Color.white.opacity(draft.planMode == mode.id ? 0.2 : 0.05)))
+                        .overlay(Capsule().stroke(mode.id == "bypassPermissions" && draft.planMode == mode.id ? Color.orange : .clear))
+                }
+                .buttonStyle(.plain)
+                .help(mode.help)
             }
-            Button("계획 승인") { onDecide(.allow) }
+        }
+        .animation(NotchMotion.snappy, value: draft.planMode)
+        HStack(spacing: 8) {
+            TextField("수정할 점을 적으면 '계속 계획'으로 전달돼요…", text: $draft.feedback)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11))
+            Button("계속 계획") { onDecide(.denyWithMessage(feedbackMessage)) }
+                .buttonStyle(PillButton(tint: .red))
+            Button("승인") { onDecide(.approvePlan(mode: draft.planMode == "default" ? nil : draft.planMode)) }
                 .buttonStyle(PillButton(tint: .green))
         }
+    }
+
+    private var feedbackMessage: String {
+        let text = draft.feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? "계획을 아직 승인하지 않았어요. 계획을 더 다듬어 주세요." : "계획 수정 요청: \(text)"
     }
 
     private var markdown: AttributedString {
@@ -547,18 +604,17 @@ struct PlanBody: View {
     }
 }
 
-/// AskUserQuestion: 여러 문항은 마법사처럼 한 문항씩
+/// AskUserQuestion: 여러 문항은 마법사처럼 한 문항씩. 쓰던 내용은 draft에 남는다.
 struct QuestionBody: View {
     let questions: [AgentQuestion]
+    @ObservedObject var draft: RequestDraft
     let onDecide: (Decision) -> Void
 
-    @State private var step = 0
-    @State private var selections: [Int: Set<String>] = [:]
-    @State private var custom: [Int: String] = [:]
     @State private var warning = false
 
     var body: some View {
-        let question = questions[min(step, questions.count - 1)]
+        let step = min(draft.step, questions.count - 1)
+        let question = questions[step]
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 if !question.header.isEmpty { Tag(text: question.header) }
@@ -566,6 +622,7 @@ struct QuestionBody: View {
                 Spacer()
                 if questions.count > 1 {
                     Text("\(step + 1) / \(questions.count)").font(.system(size: 10)).foregroundStyle(.secondary)
+                        .contentTransition(.numericText())
                 }
             }
             Text(question.text)
@@ -576,16 +633,19 @@ struct QuestionBody: View {
                     ForEach(question.options, id: \.self) { option in
                         OptionRow(
                             option: option, multi: question.multiSelect,
-                            selected: selections[question.id, default: []].contains(option.label)
+                            selected: draft.selections[question.id, default: []].contains(option.label)
                         ) { toggle(option.label, in: question) }
                     }
                     TextField("직접 입력…", text: Binding(
-                        get: { custom[question.id] ?? "" },
-                        set: { custom[question.id] = $0 }))
+                        get: { draft.custom[question.id] ?? "" },
+                        set: { draft.custom[question.id] = $0 }))
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 11))
                 }
             }
+            .id(question.id)
+            .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
+                                    removal: .move(edge: .leading).combined(with: .opacity)))
             HStack(spacing: 8) {
                 Button("터미널에서") { onDecide(.terminal) }
                     .buttonStyle(PillButton(tint: .gray))
@@ -594,41 +654,42 @@ struct QuestionBody: View {
                 }
                 Spacer()
                 if step > 0 {
-                    Button("이전") { step -= 1 }.buttonStyle(PillButton(tint: .gray))
+                    Button("이전") { draft.step -= 1 }.buttonStyle(PillButton(tint: .gray))
                 }
                 if step < questions.count - 1 {
-                    Button("다음") { step += 1 }.buttonStyle(PillButton(tint: .blue))
+                    Button("다음") { draft.step += 1 }.buttonStyle(PillButton(tint: .blue))
                 } else {
                     Button("답변 보내기") { submit() }.buttonStyle(PillButton(tint: .green))
                 }
             }
         }
+        .animation(NotchMotion.snappy, value: draft.step)
     }
 
     private func toggle(_ label: String, in question: AgentQuestion) {
-        var set = selections[question.id, default: []]
+        var set = draft.selections[question.id, default: []]
         if question.multiSelect {
             if set.contains(label) { set.remove(label) } else { set.insert(label) }
         } else {
             set = [label]
         }
-        selections[question.id] = set
+        draft.selections[question.id] = set
         warning = false
     }
 
     private func submit() {
         var answers: [String: Any] = [:]
         for question in questions {
-            let text = (custom[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = (draft.custom[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             // 옵션 순서를 지켜서 보낸다
-            var picked = question.options.map(\.label).filter { selections[question.id, default: []].contains($0) }
+            var picked = question.options.map(\.label).filter { draft.selections[question.id, default: []].contains($0) }
             if question.multiSelect {
                 if !text.isEmpty { picked.append(text) }
-                if picked.isEmpty { warning = true; step = question.id; return }
+                if picked.isEmpty { warning = true; draft.step = question.id; return }
                 answers[question.text] = picked
             } else {
                 let answer = text.isEmpty ? picked.first : text
-                guard let answer else { warning = true; step = question.id; return }
+                guard let answer else { warning = true; draft.step = question.id; return }
                 answers[question.text] = answer
             }
         }

@@ -153,6 +153,10 @@ struct PendingRequest: Identifiable {
 
 enum Decision {
     case allow, always, deny
+    /// 거부하면서 에이전트에게 이유/수정 요청을 전달
+    case denyWithMessage(String)
+    /// 계획 승인 + 이후 권한 모드 (nil이면 그대로)
+    case approvePlan(mode: String?)
     /// AskUserQuestion 답변: 질문 원문 → 문자열 또는 [문자열]
     case answer([String: Any])
     /// 노치에서는 답하지 않고 터미널 프롬프트로 넘김
@@ -182,11 +186,18 @@ struct RateLimits {
 
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [String: Session] = [:]
-    @Published private(set) var pending: [PendingRequest] = []
+    @Published private(set) var pending: [PendingRequest] = [] {
+        didSet {
+            let alive = Set(pending.map(\.id))
+            drafts = drafts.filter { alive.contains($0.key) }
+        }
+    }
     @Published private(set) var peek: Peek?
     @Published private(set) var rateLimits: RateLimits?
 
     var onSound: ((SoundCategory) -> Void)?
+    /// 요청별 답변 초안 — 노치가 접혔다 펼쳐져도 쓰던 내용 유지
+    private var drafts: [UUID: RequestDraft] = [:]
     /// 화면 공유·집중 모드 등 조용히 해야 하는 상황인지
     var isQuiet: () -> Bool = { false }
     /// 숨김 규칙에 걸린 세션 — 이후 이벤트도 무시
@@ -374,6 +385,16 @@ final class SessionStore: ObservableObject {
         case .deny:
             body = ["behavior": "deny", "message": "사용자가 Notch Island에서 거부했습니다"]
             note = "\(request.toolName) 거부함"
+        case .denyWithMessage(let message):
+            let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            body = ["behavior": "deny", "message": text.isEmpty ? "사용자가 Notch Island에서 거부했습니다" : text]
+            note = "의견 보냄"
+        case .approvePlan(let mode):
+            body = ["behavior": "allow"]
+            if let mode {
+                body["updatedPermissions"] = [["type": "setMode", "mode": mode, "destination": "session"]]
+            }
+            note = "계획 승인"
         case .answer(let answers):
             // 원래 입력은 그대로 두고 answers만 추가해야 에이전트가 받아들인다
             var updated = request.input
@@ -469,6 +490,13 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    func draft(for request: PendingRequest) -> RequestDraft {
+        if let existing = drafts[request.id] { return existing }
+        let draft = RequestDraft()
+        drafts[request.id] = draft
+        return draft
+    }
+
     func clearPeek() {
         peekWork?.cancel()
         peek = nil
@@ -500,7 +528,11 @@ final class SessionStore: ObservableObject {
             let reset = (dict["resets_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
             return RateWindow(usedPercent: used, resetsAt: reset)
         }
-        let limits = RateLimits(fiveHour: window("five_hour"), sevenDay: window("seven_day"))
+        applyRateLimits(RateLimits(fiveHour: window("five_hour"), sevenDay: window("seven_day")))
+    }
+
+    /// 상태줄·사용량 API 어느 쪽에서 오든 같은 경로로 반영 (경고선 알림 포함)
+    func applyRateLimits(_ limits: RateLimits) {
         let previous = rateLimits
         rateLimits = limits
 
@@ -649,4 +681,13 @@ final class SessionStore: ObservableObject {
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())
     }
+}
+
+/// 질문·계획 카드에서 쓰던 내용
+final class RequestDraft: ObservableObject {
+    @Published var step = 0
+    @Published var selections: [Int: Set<String>] = [:]
+    @Published var custom: [Int: String] = [:]
+    @Published var feedback = ""
+    @Published var planMode: String = "acceptEdits"
 }

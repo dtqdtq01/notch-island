@@ -133,6 +133,15 @@ final class Prefs: ObservableObject {
     @Published var showUsage = Prefs.load("showUsage", true) { didSet { save("showUsage", showUsage) } }
     @Published var disableClickToJump = Prefs.load("disableClickToJump", false) { didSet { save("disableClickToJump", disableClickToJump) } }
 
+    @Published var detailedLayout = Prefs.load("detailedLayout", false) { didSet { save("detailedLayout", detailedLayout) } }
+
+    // 자리 비움 리마인더
+    @Published var idleReminder = Prefs.load("idleReminder", true) { didSet { save("idleReminder", idleReminder) } }
+    @Published var idleMinutes = Prefs.load("idleMinutes", 2.0) { didSet { save("idleMinutes", idleMinutes) } }
+
+    // Claude 로그인으로 사용량 조회 (키체인 접근이 필요해 기본 꺼짐)
+    @Published var useClaudeSignInForUsage = Prefs.load("useClaudeSignInForUsage", false) { didSet { save("useClaudeSignInForUsage", useClaudeSignInForUsage) } }
+
     // 사용량 경고
     @Published var usageAlert = Prefs.load("usageAlert", true) { didSet { save("usageAlert", usageAlert) } }
     @Published var usageThreshold = Prefs.load("usageThreshold", 80.0) { didSet { save("usageThreshold", usageThreshold) } }

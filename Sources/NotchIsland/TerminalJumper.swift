@@ -60,11 +60,12 @@ enum TerminalJumper {
 
         DispatchQueue.main.async {
             guard let bundle, let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first else { return }
-            app.activate()
-            // bridge가 창 제목에 넣은 세션 표식으로 먼저 찾고, 없으면 프로젝트 이름으로
+            // 창을 먼저 앞으로(메인 창으로) 올린 뒤 앱을 활성화해야
+            // macOS가 그 창이 있는 데스크톱 공간(Space)으로 넘어간다
             if !raiseWindow(pid: app.processIdentifier, containing: marker(for: session.id)) {
                 raiseWindow(pid: app.processIdentifier, containing: session.projectName)
             }
+            app.activate()
         }
     }
 

@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let usage = UsageStore()
     private lazy var quiet = QuietMonitor(prefs: prefs)
     private var hookWatcher: HookWatcher?
+    private var idleWatcher: IdleWatcher?
+    private var claudeUsage: ClaudeUsageFetcher?
     private var server: SocketServer?
     private var notch: NotchPanelController?
     private var settings: SettingsWindowController?
@@ -37,8 +39,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.sounds.play(category)
         }
         hookWatcher = HookWatcher(prefs: prefs, store: store)
+        idleWatcher = IdleWatcher(prefs: prefs, store: store) { [weak self] category in
+            guard let self, !self.quiet.isQuiet else { return }
+            self.sounds.play(category)
+        }
+        let claudeUsage = ClaudeUsageFetcher(prefs: prefs, store: store)
+        self.claudeUsage = claudeUsage
         settings = SettingsWindowController(
-            prefs: prefs, usage: usage, sounds: sounds, quiet: quiet,
+            prefs: prefs, usage: usage, sounds: sounds, quiet: quiet, claudeUsage: claudeUsage,
             onShortcutsChanged: { [weak self] in self?.registerHotkeys() },
             onIntegrationsChanged: { [weak self] in self?.hookWatcher?.reset() })
         notch = NotchPanelController(store: store, prefs: prefs, quiet: quiet) { [weak self] in self?.settings?.show() }

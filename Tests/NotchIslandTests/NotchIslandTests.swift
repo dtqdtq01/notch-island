@@ -385,3 +385,90 @@ extension IntegrationTests {
         prefs.managedIntegrations = []
     }
 }
+
+@Suite struct DailyFeatureTests {
+    let store = SessionStore(prefs: Prefs())
+
+    private func planRequest() -> (PendingRequest, LineReader, Int32, Int32) {
+        let (responder, reader, a, b) = makePair()
+        store.ingestPermission(permissionEvent(tool: "ExitPlanMode", input: ["plan": "1. 고치기"]),
+                               source: "claude", terminal: nil, id: UUID(), responder: responder)
+        return (store.pending.first!, reader, a, b)
+    }
+
+    @Test func approvePlanSetsMode() {
+        let (request, reader, a, b) = planRequest()
+        defer { close(a); close(b) }
+        store.decide(request, .approvePlan(mode: "acceptEdits"))
+        let body = decision(readJSON(reader))
+        #expect(body?["behavior"] as? String == "allow")
+        let update = (body?["updatedPermissions"] as? [[String: Any]])?.first
+        #expect(update?["type"] as? String == "setMode")
+        #expect(update?["mode"] as? String == "acceptEdits")
+        #expect(update?["destination"] as? String == "session")
+    }
+
+    @Test func approvePlanDefaultKeepsMode() {
+        let (request, reader, a, b) = planRequest()
+        defer { close(a); close(b) }
+        store.decide(request, .approvePlan(mode: nil))
+        #expect(decision(readJSON(reader))?["updatedPermissions"] == nil)
+    }
+
+    @Test func feedbackIsSentAsDenyMessage() {
+        let (request, reader, a, b) = planRequest()
+        defer { close(a); close(b) }
+        store.decide(request, .denyWithMessage("계획 수정 요청: 테스트부터"))
+        let body = decision(readJSON(reader))
+        #expect(body?["behavior"] as? String == "deny")
+        #expect(body?["message"] as? String == "계획 수정 요청: 테스트부터")
+    }
+
+    @Test func draftSurvivesUntilRequestEnds() {
+        let (request, _, a, b) = planRequest()
+        defer { close(a); close(b) }
+        let draft = store.draft(for: request)
+        draft.feedback = "쓰던 내용"
+        draft.step = 1
+        // 노치가 접혔다 펼쳐지면 같은 초안을 다시 받는다
+        #expect(store.draft(for: request) === draft)
+        #expect(store.draft(for: request).feedback == "쓰던 내용")
+        store.decide(request, .approvePlan(mode: nil))
+        #expect(store.draft(for: request) !== draft)  // 끝난 요청의 초안은 버려짐
+    }
+
+    @Test func parsesUsageAPIResponse() throws {
+        let json = #"{"five_hour":{"utilization":3,"resets_at":"2026-10-12T07:00:00.429331+00:00","used_dollars":null},"seven_day":{"utilization":11.5,"resets_at":"2026-10-16T11:00:00.429351+00:00"},"seven_day_opus":null}"#
+        let limits = try #require(ClaudeUsageFetcher.parse(Data(json.utf8)))
+        #expect(limits.fiveHour?.usedPercent == 3)
+        #expect(limits.sevenDay?.usedPercent == 11.5)
+        let reset = try #require(limits.fiveHour?.resetsAt)
+        #expect(Calendar(identifier: .gregorian).dateComponents(in: TimeZone(identifier: "UTC")!, from: reset).hour == 7)
+        #expect(ClaudeUsageFetcher.parse(Data(#"{"error":"x"}"#.utf8)) == nil)
+    }
+
+    @Test func idleReminderFiresOnReturn() {
+        let prefs = Prefs()
+        prefs.idleReminder = true
+        prefs.idleMinutes = 2
+        let store = SessionStore(prefs: prefs)
+        var sounds: [SoundCategory] = []
+        let watcher = IdleWatcher(prefs: prefs, store: store) { sounds.append($0) }
+        let now = Date()
+
+        watcher.check(idle: 30, now: now)  // 아직 자리 비움 아님
+        watcher.check(idle: 300, now: now)  // 5분째 입력 없음 → 자리 비움 시작
+        store.ingest(["hook_event_name": "Notification", "session_id": "w", "cwd": "/w/app",
+                      "notification_type": "idle_prompt", "message": "기다려요"], source: "claude", terminal: nil)
+        watcher.check(idle: 1, now: now.addingTimeInterval(10))  // 돌아옴
+        #expect(store.peek?.title == "자리 비운 사이 1개 세션이 기다려요")
+        #expect(sounds == [.idleReminder])
+
+        // 기다리는 세션이 없으면 조용히
+        store.clearPeek()
+        watcher.check(idle: 300, now: now.addingTimeInterval(20))
+        store.ingest(["hook_event_name": "SessionEnd", "session_id": "w"], source: "claude", terminal: nil)
+        watcher.check(idle: 1, now: now.addingTimeInterval(30))
+        #expect(store.peek == nil)
+    }
+}

@@ -42,6 +42,17 @@ import Testing
                                 "permission_suggestions": [["type": "setMode", "mode": "acceptEdits"]]],
                                source: "claude", terminal: nil, id: UUID(), responder: Responder(fd: fds[0]))
         try render("3-approval", mode: .expanded, size: CGSize(width: 540, height: g.notchHeight + 6 + 28 + 270 + 8 + 3 * 48 + 14))
+        prefs.detailedLayout = true
+        try render("5-collapsed-detailed", mode: .collapsed, size: CGSize(width: g.notchWidth + 240, height: g.notchHeight))
+        prefs.detailedLayout = false
+        store.decide(store.pending.first!, .allow)
+        var fds2: [Int32] = [0, 0]
+        socketpair(AF_UNIX, SOCK_STREAM, 0, &fds2)
+        defer { close(fds2[0]); close(fds2[1]) }
+        store.ingestPermission(["hook_event_name": "PermissionRequest", "session_id": "b", "cwd": "/w/dino-passport", "tool_name": "ExitPlanMode",
+                                "tool_input": ["plan": "## 계획\n1. **애니메이션** 스프링 조정\n2. 테스트 추가"]],
+                               source: "claude", terminal: nil, id: UUID(), responder: Responder(fd: fds2[0]))
+        try render("6-plan", mode: .expanded, size: CGSize(width: 540, height: g.notchHeight + 6 + 28 + 372 + 8 + 3 * 48 + 14))
         store.notify("훅을 복구했어요", "Claude Code 설정을 다른 도구가 바꿨어요")
         try render("4-peek", mode: .peek, size: CGSize(width: 460, height: g.notchHeight + 76))
     }

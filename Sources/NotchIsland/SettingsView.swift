@@ -9,11 +9,13 @@ final class SettingsWindowController {
     private let usage: UsageStore
     private let sounds: SoundPlayer
     private let quiet: QuietMonitor
+    private let claudeUsage: ClaudeUsageFetcher
     private let onShortcutsChanged: () -> Void
     private let onIntegrationsChanged: () -> Void
 
-    init(prefs: Prefs, usage: UsageStore, sounds: SoundPlayer, quiet: QuietMonitor,
+    init(prefs: Prefs, usage: UsageStore, sounds: SoundPlayer, quiet: QuietMonitor, claudeUsage: ClaudeUsageFetcher,
          onShortcutsChanged: @escaping () -> Void, onIntegrationsChanged: @escaping () -> Void) {
+        self.claudeUsage = claudeUsage
         self.prefs = prefs
         self.usage = usage
         self.sounds = sounds
@@ -25,7 +27,7 @@ final class SettingsWindowController {
     func show(tab: SettingsTab = .general) {
         if window == nil {
             let view = SettingsView(
-                prefs: prefs, usage: usage, sounds: sounds, quiet: quiet,
+                prefs: prefs, usage: usage, sounds: sounds, quiet: quiet, claudeUsage: claudeUsage,
                 initialTab: tab, onShortcutsChanged: onShortcutsChanged,
                 onIntegrationsChanged: onIntegrationsChanged)
             let window = NSWindow(
@@ -77,6 +79,7 @@ struct SettingsView: View {
     @ObservedObject var usage: UsageStore
     let sounds: SoundPlayer
     @ObservedObject var quiet: QuietMonitor
+    @ObservedObject var claudeUsage: ClaudeUsageFetcher
     @State var initialTab: SettingsTab
     let onShortcutsChanged: () -> Void
     let onIntegrationsChanged: () -> Void
@@ -95,7 +98,7 @@ struct SettingsView: View {
     @ViewBuilder
     private func content(_ tab: SettingsTab) -> some View {
         switch tab {
-        case .general: GeneralSettings(prefs: prefs, quiet: quiet)
+        case .general: GeneralSettings(prefs: prefs, quiet: quiet, claudeUsage: claudeUsage)
         case .silence: SilenceSettings(prefs: prefs)
         case .sound: SoundSettings(prefs: prefs, sounds: sounds)
         case .shortcuts: ShortcutSettings(prefs: prefs, onChanged: onShortcutsChanged)
@@ -111,6 +114,7 @@ struct SettingsView: View {
 struct GeneralSettings: View {
     @ObservedObject var prefs: Prefs
     @ObservedObject var quiet: QuietMonitor
+    @ObservedObject var claudeUsage: ClaudeUsageFetcher
     @State private var launchAtLogin = Integrations.launchAtLogin
     @State private var loginError: String?
 
@@ -128,11 +132,25 @@ struct GeneralSettings: View {
                 Toggle("세션 클릭 시 터미널 점프 끄기", isOn: $prefs.disableClickToJump)
             }
             Section("표시") {
+                Picker("접힌 노치", selection: $prefs.detailedLayout) {
+                    Text("깔끔 — 상태 점과 개수").tag(false)
+                    Text("자세히 — 세션 이름과 상태").tag(true)
+                }
+                .pickerStyle(.radioGroup)
                 Toggle("전체화면 앱에서는 숨기기", isOn: $prefs.hideInFullscreen)
                 Toggle("세션이 없으면 숨기기", isOn: $prefs.autoHideWhenIdle)
                 Toggle("AI 모델 표시", isOn: $prefs.showModel)
                 Toggle("서브에이전트 수 표시", isOn: $prefs.showSubagents)
                 Toggle("사용 한도(5시간/7일) 표시", isOn: $prefs.showUsage)
+            }
+            Section("자리 비움 리마인더") {
+                Toggle("자리를 비웠다 돌아오면 기다리는 세션 알려주기", isOn: $prefs.idleReminder)
+                HStack {
+                    Text("자리 비움 기준")
+                    Slider(value: $prefs.idleMinutes, in: 1...15, step: 1)
+                    Text("\(Int(prefs.idleMinutes))분").monospacedDigit().frame(width: 40)
+                }
+                .disabled(!prefs.idleReminder)
             }
             Section("방해 금지") {
                 Toggle("화면 공유·녹화 중에는 조용히", isOn: $prefs.quietDuringScreenShare)
@@ -149,6 +167,20 @@ struct GeneralSettings: View {
                 }
                 Text(quiet.reason.map { "지금: \($0) — 노치가 저절로 펼쳐지지 않고 효과음도 꺼져요" } ?? "조용히 할 때는 노치가 저절로 펼쳐지지 않고 효과음도 꺼져요. 접힌 노치의 개수 표시는 그대로예요.")
                     .font(.caption).foregroundStyle(quiet.reason == nil ? Color.secondary : Color.orange)
+            }
+            Section("사용량 불러오기") {
+                Toggle("Claude Code 로그인으로 사용 한도 조회", isOn: $prefs.useClaudeSignInForUsage)
+                    .onChange(of: prefs.useClaudeSignInForUsage) { _, on in if on { claudeUsage.refresh() } }
+                Text("키체인에 저장된 Claude Code 로그인 토큰을 읽어 Anthropic 사용량 API에만 보내요. 처음 켤 때 macOS가 키체인 접근을 물어봐요. 끄면 상태줄 연동 값만 써요.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if prefs.useClaudeSignInForUsage {
+                    HStack {
+                        Text(claudeUsage.status.text).font(.caption)
+                            .foregroundStyle(isError(claudeUsage.status) ? Color.orange : Color.secondary)
+                        Spacer()
+                        Button("지금 새로고침") { claudeUsage.refresh() }
+                    }
+                }
             }
             Section("사용량 경고") {
                 Toggle("사용 한도 경고", isOn: $prefs.usageAlert)
@@ -174,6 +206,13 @@ struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+private func isError(_ status: ClaudeUsageFetcher.Status) -> Bool {
+    switch status {
+    case .ok, .loading, .off: return false
+    default: return true
     }
 }
 

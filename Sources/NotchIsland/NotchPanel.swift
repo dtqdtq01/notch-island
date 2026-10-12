@@ -30,6 +30,9 @@ enum NotchMode { case collapsed, peek, expanded }
 /// 뷰와 컨트롤러가 같이 쓰는 크기 값
 enum Metrics {
     static let sideWidth: CGFloat = 40
+    /// "자세히" 레이아웃에서 접힌 노치 양옆 폭
+    static let detailedSideWidth: CGFloat = 120
+    static func sideWidth(detailed: Bool) -> CGFloat { detailed ? detailedSideWidth : sideWidth }
     static let expandedWidth: CGFloat = 540
     static let headerHeight: CGFloat = 28
     static let rowHeight: CGFloat = 48
@@ -53,7 +56,7 @@ enum Metrics {
         case .question(let questions):
             let options = questions.first?.options.count ?? 0
             return min(220 + CGFloat(options) * 34, 420)
-        case .plan: return 340
+        case .plan: return 372
         }
     }
 }
@@ -332,7 +335,7 @@ final class NotchPanelController {
 
     private func collapsedSize() -> CGSize {
         let g = model.geometry
-        let sides: CGFloat = store.sessions.isEmpty ? 0 : Metrics.sideWidth * 2
+        let sides: CGFloat = store.sessions.isEmpty ? 0 : Metrics.sideWidth(detailed: prefs.detailedLayout) * 2
         return CGSize(width: g.notchWidth + sides, height: g.notchHeight)
     }
 
