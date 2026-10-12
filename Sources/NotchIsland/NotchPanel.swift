@@ -9,10 +9,8 @@ struct NotchGeometry {
     var notchHeight: CGFloat
     var hasNotch: Bool
 
-    static func current() -> NotchGeometry {
-        let screens = NSScreen.screens
-        let notched = screens.first { $0.safeAreaInsets.top > 0 }
-        let screen = notched ?? NSScreen.main ?? screens[0]
+    static func current(choice: String = Prefs.shared.displayChoice) -> NotchGeometry {
+        let screen = DisplayChoice.screen(for: choice)
         if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea, screen.safeAreaInsets.top > 0 {
             return NotchGeometry(
                 screen: screen,
@@ -160,11 +158,15 @@ final class NotchPanelController {
             .sink { [weak self] in self?.layout() }
             .store(in: &cancellables)
 
+        // 모니터 연결·해제, 해상도 변경, 또는 설정에서 화면을 바꾸면 다시 배치
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
-            .sink { [weak self] _ in
-                self?.model.geometry = NotchGeometry.current()
-                self?.lastFrame = .zero
-            }
+            .sink { [weak self] _ in self?.moveToChosenScreen() }
+            .store(in: &cancellables)
+        prefs.$displayChoice
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.moveToChosenScreen() }
             .store(in: &cancellables)
 
         let workspace = NSWorkspace.shared.notificationCenter
@@ -288,7 +290,21 @@ final class NotchPanelController {
         return NSRect(x: screen.midX - width / 2, y: screen.maxY - model.size.height, width: width, height: model.size.height)
     }
 
+    /// 고른 화면으로 노치를 옮긴다 (같은 화면이면 아무것도 안 함)
+    private func moveToChosenScreen(force: Bool = true) {
+        let geometry = NotchGeometry.current(choice: prefs.displayChoice)
+        guard force || geometry.screen != model.geometry.screen else { return }
+        model.geometry = geometry
+        lastFrame = .zero
+        layout()
+    }
+
     private func trackMouse() {
+        // "마우스가 있는 화면" 모드: 접혀 있을 때 마우스가 다른 화면으로 가면 따라간다
+        if prefs.displayChoice == DisplayChoice.mouse, model.mode == .collapsed,
+           !NSMouseInRect(NSEvent.mouseLocation, model.geometry.screen.frame, false) {
+            moveToChosenScreen(force: false)
+        }
         let inside = visibleRect.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
         if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
         guard inside != mouseInside else { return }

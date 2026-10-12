@@ -132,6 +132,7 @@ struct GeneralSettings: View {
                 Toggle("세션 클릭 시 터미널 점프 끄기", isOn: $prefs.disableClickToJump)
             }
             Section("표시") {
+                DisplayPicker(prefs: prefs)
                 Picker("접힌 노치", selection: $prefs.detailedLayout) {
                     Text("깔끔 — 상태 점과 개수").tag(false)
                     Text("자세히 — 세션 이름과 상태").tag(true)
@@ -710,5 +711,43 @@ struct RuleList: View {
         guard panel.runModal() == .OK, let url = panel.url,
               let id = Bundle(url: url)?.bundleIdentifier, !rules.contains(id) else { return }
         rules.append(id)
+    }
+}
+
+// MARK: - 화면 선택
+
+/// 노치를 띄울 모니터 고르기. 모니터를 꽂거나 빼면 목록이 바로 바뀐다.
+struct DisplayPicker: View {
+    @ObservedObject var prefs: Prefs
+    @State private var screens = DisplayChoice.currentScreens
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Picker("노치를 띄울 화면", selection: $prefs.displayChoice) {
+                Text("자동 — 노치 있는 화면, 없으면 주 화면").tag(DisplayChoice.auto)
+                Text("주 화면 (메뉴 막대가 있는 화면)").tag(DisplayChoice.primary)
+                Text("마우스가 있는 화면 (따라다님)").tag(DisplayChoice.mouse)
+                if screens.count > 0 { Divider() }
+                ForEach(Array(screens.enumerated()), id: \.element.uuid) { index, screen in
+                    Text(DisplayChoice.label(screen, isPrimary: index == 0)).tag(DisplayChoice.specific(screen.uuid))
+                }
+                if isMissingSpecific {
+                    Text("저장한 모니터 (지금 연결 안 됨)").tag(prefs.displayChoice)
+                }
+            }
+            if isMissingSpecific {
+                Text("고른 모니터가 연결돼 있지 않아서 지금은 자동 규칙으로 띄우고 있어요. 다시 연결하면 그 화면으로 돌아가요.")
+                    .font(.caption).foregroundStyle(.orange)
+            } else if screens.count < 2 {
+                Text("모니터가 하나뿐이라 지금은 차이가 없어요.").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            screens = DisplayChoice.currentScreens
+        }
+    }
+
+    private var isMissingSpecific: Bool {
+        prefs.displayChoice.hasPrefix("uuid:") && !screens.contains { DisplayChoice.specific($0.uuid) == prefs.displayChoice }
     }
 }

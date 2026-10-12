@@ -137,6 +137,8 @@ final class Prefs: ObservableObject {
     @Published var projectColors: [String: String] = Prefs.load("projectColors", [:]) { didSet { save("projectColors", projectColors) } }
     /// 데스크톱 앱(Claude·ChatGPT) 세션의 권한 요청은 노치 대신 앱 화면에서 처리
     @Published var desktopApprovalsInApp = Prefs.load("desktopApprovalsInApp", false) { didSet { save("desktopApprovalsInApp", desktopApprovalsInApp) } }
+    /// 노치를 띄울 화면 (DisplayChoice 참고)
+    @Published var displayChoice = Prefs.load("displayChoice", "auto") { didSet { save("displayChoice", displayChoice) } }
     @Published var detailedLayout = Prefs.load("detailedLayout", true) { didSet { save("detailedLayout", detailedLayout) } }
 
     // 자리 비움 리마인더

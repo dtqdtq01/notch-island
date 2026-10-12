@@ -663,3 +663,46 @@ extension DesktopAppTests {
         #expect(DesktopSessionIndex.resumeURL(cliSessionID: "not-a-uuid") == nil)
     }
 }
+
+@Suite struct DisplayChoiceTests {
+    private let external = DisplayChoice.ScreenInfo(uuid: "EXT-1", name: "LG UltraFine", hasNotch: false, isBuiltIn: false)
+    private let builtIn = DisplayChoice.ScreenInfo(uuid: "MAC-1", name: "내장 Retina", hasNotch: true, isBuiltIn: true)
+    private let second = DisplayChoice.ScreenInfo(uuid: "EXT-2", name: "Dell", hasNotch: false, isBuiltIn: false)
+
+    @Test func autoPrefersNotchThenPrimary() {
+        // screens[0] = 메뉴 막대가 있는 주 화면 (여기선 외장)
+        #expect(DisplayChoice.resolve("auto", screens: [external, builtIn], mouseIndex: nil) == 1)
+        #expect(DisplayChoice.resolve("auto", screens: [external, second], mouseIndex: nil) == 0)
+    }
+
+    @Test func primaryAndMouse() {
+        #expect(DisplayChoice.resolve("primary", screens: [external, builtIn], mouseIndex: 1) == 0)
+        #expect(DisplayChoice.resolve("mouse", screens: [external, builtIn, second], mouseIndex: 2) == 2)
+        // 마우스 위치를 모르면 자동 규칙
+        #expect(DisplayChoice.resolve("mouse", screens: [external, builtIn], mouseIndex: nil) == 1)
+    }
+
+    @Test func specificMonitorAndFallbackWhenUnplugged() {
+        #expect(DisplayChoice.resolve("uuid:EXT-2", screens: [external, builtIn, second], mouseIndex: nil) == 2)
+        // 그 모니터를 뺐으면 자동 규칙으로
+        #expect(DisplayChoice.resolve("uuid:EXT-2", screens: [external, builtIn], mouseIndex: nil) == 1)
+        #expect(DisplayChoice.resolve("이상한 값", screens: [external, builtIn], mouseIndex: nil) == 1)
+        #expect(DisplayChoice.resolve("auto", screens: [], mouseIndex: nil) == 0)
+    }
+
+    @Test func labels() {
+        #expect(DisplayChoice.label(builtIn, isPrimary: false) == "내장 Retina (내장, 노치)")
+        #expect(DisplayChoice.label(external, isPrimary: true) == "LG UltraFine (주 화면)")
+        #expect(DisplayChoice.label(second, isPrimary: false) == "Dell")
+    }
+
+    @MainActor @Test func realScreensResolve() {
+        // 지금 연결된 화면으로도 오류 없이 하나를 고른다
+        let screens = DisplayChoice.currentScreens
+        #expect(!screens.isEmpty)
+        for choice in ["auto", "primary", "mouse"] + screens.map({ DisplayChoice.specific($0.uuid) }) {
+            _ = DisplayChoice.screen(for: choice)
+        }
+        print("연결된 화면:", screens.enumerated().map { DisplayChoice.label($0.element, isPrimary: $0.offset == 0) })
+    }
+}

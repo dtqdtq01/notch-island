@@ -129,10 +129,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item)
         }
         menu.addItem(.separator())
+        menu.addItem(displayMenuItem())
         let settingsItem = NSMenuItem(title: "설정…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
         menu.addItem(NSMenuItem(title: "종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    /// 메뉴 막대에서 바로 화면 바꾸기
+    private func displayMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "노치 화면", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        var options: [(String, String)] = [
+            ("자동", DisplayChoice.auto), ("주 화면", DisplayChoice.primary), ("마우스가 있는 화면", DisplayChoice.mouse),
+        ]
+        let screens = DisplayChoice.currentScreens
+        if screens.count > 1 {
+            for (index, screen) in screens.enumerated() {
+                options.append((DisplayChoice.label(screen, isPrimary: index == 0), DisplayChoice.specific(screen.uuid)))
+            }
+        }
+        for (index, (title, value)) in options.enumerated() {
+            if index == 3 { submenu.addItem(.separator()) }
+            let option = NSMenuItem(title: title, action: #selector(chooseDisplay(_:)), keyEquivalent: "")
+            option.target = self
+            option.representedObject = value
+            option.state = prefs.displayChoice == value ? .on : .off
+            submenu.addItem(option)
+        }
+        item.submenu = submenu
+        return item
+    }
+
+    @objc private func chooseDisplay(_ sender: NSMenuItem) {
+        if let value = sender.representedObject as? String { prefs.displayChoice = value }
     }
 
     @objc private func jumpFromMenu(_ sender: NSMenuItem) {
