@@ -22,8 +22,9 @@ enum TerminalProbe {
     static let envKeys = [
         "TERM_PROGRAM", "__CFBundleIdentifier", "ITERM_SESSION_ID", "TERM_SESSION_ID",
         "TMUX", "TMUX_PANE", "KITTY_WINDOW_ID", "KITTY_LISTEN_ON", "WEZTERM_PANE",
-        "ZELLIJ_SESSION_NAME",
+        "ZELLIJ_SESSION_NAME", "WARP_FOCUS_URL",
     ]
+    private static let shells: Set<String> = ["sh", "bash", "zsh", "dash", "fish", "ksh", "env", "nohup"]
 
     static func capture() -> [String: Any] {
         var info: [String: Any] = [:]
@@ -32,6 +33,17 @@ enum TerminalProbe {
             if let value = env[key], !value.isEmpty { info[key] = value }
         }
         if let tty = controllingTTY() { info["tty"] = tty }
+        let chain = ancestors()
+        // 훅을 띄운 셸을 건너뛴 첫 조상 = 에이전트 프로세스 (앱이 생존 여부를 감시)
+        if let agent = chain.first(where: { !shells.contains(($0.path as NSString).lastPathComponent) }) {
+            info["agent_pid"] = Int(agent.pid)
+        }
+        // 세션을 띄운 앱들의 번들 ID (가까운 순서) — 백그라운드 도구 세션 걸러내기용
+        var bundles: [String] = []
+        for entry in chain {
+            if let id = bundleID(forExecutable: entry.path), !bundles.contains(id) { bundles.append(id) }
+        }
+        if !bundles.isEmpty { info["ancestor_bundles"] = bundles }
         return info
     }
 
@@ -50,6 +62,27 @@ enum TerminalProbe {
         return nil
     }
 
+    /// 부모부터 launchd 직전까지의 (pid, 실행 파일 경로)
+    static func ancestors() -> [(pid: pid_t, path: String)] {
+        var result: [(pid_t, String)] = []
+        var pid = getppid()
+        for _ in 0..<25 {
+            guard pid > 1, let proc = kinfo(pid) else { break }
+            var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+            if proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 {
+                result.append((pid, String(cString: buffer)))
+            }
+            pid = proc.kp_eproc.e_ppid
+        }
+        return result
+    }
+
+    static func bundleID(forExecutable path: String) -> String? {
+        guard let range = path.range(of: ".app/Contents/MacOS/", options: .backwards) else { return nil }
+        let plist = String(path[..<range.lowerBound]) + ".app/Contents/Info.plist"
+        return NSDictionary(contentsOfFile: plist)?["CFBundleIdentifier"] as? String
+    }
+
     static func kinfo(_ pid: pid_t) -> kinfo_proc? {
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
@@ -59,9 +92,59 @@ enum TerminalProbe {
     }
 }
 
-func send(_ event: [String: Any]) -> Int32? {
+/// AppleScript로 창을 찾을 수 없는 터미널은 창 제목에 세션 표식을 넣어 두고, 앱이 그 제목으로 창을 찾는다.
+enum TitleMarker {
+    private static let markedTerminals: Set<String> = ["ghostty", "WarpTerminal", "Hyper", "alacritty", "Tabby", "rio"]
+    private static let markedBundles: Set<String> = [
+        "com.mitchellh.ghostty", "dev.warp.Warp-Stable", "dev.warp.Warp-Preview", "co.zeit.hyper",
+        "org.alacritty", "org.tabby", "com.raphaelamorim.rio",
+    ]
+
+    static func marker(for sessionID: String) -> String { "‹\(sessionID.prefix(8))›" }
+
+    static func applies(_ terminal: [String: Any]) -> Bool {
+        guard terminal["TMUX"] == nil else { return false }  // tmux 안에서는 바깥 창 제목이 바뀌지 않음
+        if FileManager.default.fileExists(atPath: NotchPaths.titleMarkerDisabled.path) { return false }
+        if let program = terminal["TERM_PROGRAM"] as? String, markedTerminals.contains(program) { return true }
+        if let bundle = terminal["__CFBundleIdentifier"] as? String, markedBundles.contains(bundle) { return true }
+        // 원격 제어가 꺼진 kitty
+        return terminal["KITTY_WINDOW_ID"] != nil && terminal["KITTY_LISTEN_ON"] == nil
+    }
+
+    /// OSC 2 (창 제목) 를 제어 터미널에 직접 쓴다
+    static func write(sessionID: String, cwd: String?, tty: String?) {
+        let project = cwd.map { ($0 as NSString).lastPathComponent } ?? "claude"
+        let title = "\(project) \(marker(for: sessionID))"
+            .replacingOccurrences(of: "\u{07}", with: "")
+            .replacingOccurrences(of: "\u{1B}", with: "")
+        var fd = open("/dev/tty", O_WRONLY | O_NOCTTY | O_NONBLOCK)
+        if fd < 0, let tty { fd = open(tty, O_WRONLY | O_NOCTTY | O_NONBLOCK) }
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        UnixSocket.writeAll(fd, Data("\u{1B}]2;\(title)\u{07}".utf8))
+    }
+}
+
+/// 앱이 쓰지 않는 큰 필드를 덜어내 소켓 부담을 줄인다
+func slimmed(_ event: [String: Any]) -> [String: Any] {
+    var event = event
+    event["tool_response"] = nil  // PostToolUse 결과(파일 내용 등)는 쓰지 않음
+    let tool = event["tool_name"] as? String
+    if tool != "AskUserQuestion" && tool != "ExitPlanMode", var input = event["tool_input"] as? [String: Any] {
+        let limit = 100_000
+        for (key, value) in input {
+            if let text = value as? String, text.count > limit {
+                input[key] = String(text.prefix(limit)) + "\n… (Notch Island: 미리보기용으로 잘림)"
+            }
+        }
+        event["tool_input"] = input
+    }
+    return event
+}
+
+func send(_ event: [String: Any], terminal: [String: Any] = TerminalProbe.capture()) -> Int32? {
     guard let fd = UnixSocket.connect(to: NotchPaths.socket) else { return nil }
-    let envelope: [String: Any] = ["source": source, "event": event, "terminal": TerminalProbe.capture()]
+    let envelope: [String: Any] = ["source": source, "event": event, "terminal": terminal]
     guard UnixSocket.sendLine(fd, envelope) else { close(fd); return nil }
     return fd
 }
@@ -122,7 +205,16 @@ guard !input.isEmpty,
       let eventName = event["hook_event_name"] as? String
 else { exit(0) }
 
-guard let fd = send(event) else { exit(0) }
+// 사용자가 끈 세션 (예: NOTCH_ISLAND_SKIP=1 claude -p ...)
+if ProcessInfo.processInfo.environment["NOTCH_ISLAND_SKIP"] != nil { exit(0) }
+
+let terminal = TerminalProbe.capture()
+if ["SessionStart", "UserPromptSubmit", "Stop", "Notification"].contains(eventName),
+   let sessionID = event["session_id"] as? String, TitleMarker.applies(terminal) {
+    TitleMarker.write(sessionID: sessionID, cwd: event["cwd"] as? String, tty: terminal["tty"] as? String)
+}
+
+guard let fd = send(slimmed(event), terminal: terminal) else { exit(0) }
 
 if eventName == "PermissionRequest" {
     // 앱이 결정을 보낼 때까지 블록. 사용자가 터미널에서 먼저 답하면 에이전트가 이 프로세스를 정리한다.

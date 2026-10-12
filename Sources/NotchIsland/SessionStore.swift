@@ -50,6 +50,9 @@ struct TerminalInfo {
     var kittyWindow: String?
     var kittyListen: String?
     var weztermPane: String?
+    var warpFocusURL: String?
+    var agentPID: Int32?
+    var ancestorBundles: [String] = []
 
     init(_ info: [String: Any]?) {
         let info = info ?? [:]
@@ -60,9 +63,14 @@ struct TerminalInfo {
         kittyWindow = info["KITTY_WINDOW_ID"] as? String
         kittyListen = info["KITTY_LISTEN_ON"] as? String
         weztermPane = info["WEZTERM_PANE"] as? String
+        warpFocusURL = info["WARP_FOCUS_URL"] as? String
+        agentPID = (info["agent_pid"] as? NSNumber).map { Int32(truncating: $0) }
+        ancestorBundles = info["ancestor_bundles"] as? [String] ?? []
     }
 
-    var isEmpty: Bool { tty == nil && bundleID == nil && termProgram == nil }
+    var isEmpty: Bool {
+        tty == nil && bundleID == nil && termProgram == nil && agentPID == nil && ancestorBundles.isEmpty
+    }
 
     /// 실제 창을 띄운 앱의 번들 ID
     var hostBundleID: String? {
@@ -88,6 +96,7 @@ struct Session: Identifiable {
     var model: String?
     var contextPercent: Double?
     var subagents = 0
+    var firstPrompt: String?
     var terminal = TerminalInfo(nil)
     var updatedAt = Date()
 
@@ -150,7 +159,7 @@ enum Decision {
     case terminal
 }
 
-enum PeekKind { case complete, error, usage }
+enum PeekKind { case complete, error, usage, info }
 
 struct Peek: Identifiable {
     let id = UUID()
@@ -178,9 +187,14 @@ final class SessionStore: ObservableObject {
     @Published private(set) var rateLimits: RateLimits?
 
     var onSound: ((SoundCategory) -> Void)?
+    /// 화면 공유·집중 모드 등 조용히 해야 하는 상황인지
+    var isQuiet: () -> Bool = { false }
+    /// 숨김 규칙에 걸린 세션 — 이후 이벤트도 무시
+    private(set) var silenced = Set<String>()
 
     private let prefs: Prefs
     private var pruneTimer: Timer?
+    private var livenessTimer: Timer?
     private var peekWork: DispatchWorkItem?
     private var promptTimes: [Date] = []
     private var alertedWindows = Set<String>()
@@ -189,6 +203,9 @@ final class SessionStore: ObservableObject {
         self.prefs = prefs
         pruneTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.prune()
+        }
+        livenessTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            self?.reapDeadSessions()
         }
         loadCachedRateLimits()
     }
@@ -215,12 +232,11 @@ final class SessionStore: ObservableObject {
         let sid = event["session_id"] as? String ?? "unknown"
 
         if name == "SessionEnd" {
-            sessions[sid] = nil
-            for request in pending where request.sessionID == sid { request.responder.markClosed() }
-            pending.removeAll { $0.sessionID == sid }
-            if peek?.sessionID == sid { clearPeek() }
+            endSession(sid)
+            silenced.remove(sid)
             return
         }
+        if silenced.contains(sid) { return }
 
         if name == "StatusLine" {
             ingestStatusLine(event, sid: sid, source: source, terminal: terminal)
@@ -228,6 +244,13 @@ final class SessionStore: ObservableObject {
         }
 
         var session = touch(sid, event: event, source: source, terminal: terminal)
+        if name == "UserPromptSubmit", session.firstPrompt == nil {
+            session.firstPrompt = event["prompt"] as? String
+        }
+        if silenceReason(session) != nil {
+            silence(sid)
+            return
+        }
         switch name {
         case "SessionStart":
             session.status = .idle
@@ -282,6 +305,12 @@ final class SessionStore: ObservableObject {
     func ingestPermission(_ event: [String: Any], source: String, terminal: [String: Any]?, id: UUID, responder: Responder) {
         let sid = event["session_id"] as? String ?? "unknown"
         var session = touch(sid, event: event, source: source, terminal: terminal)
+        // 숨긴 세션은 노치에서 다루지 않고 터미널 프롬프트로 넘긴다
+        if silenced.contains(sid) || silenceReason(session) != nil {
+            responder.cancel()
+            silence(sid)
+            return
+        }
         let toolName = event["tool_name"] as? String ?? "Tool"
         let input = event["tool_input"] as? [String: Any] ?? [:]
 
@@ -377,6 +406,69 @@ final class SessionStore: ObservableObject {
         for request in pending where request.isPermission { decide(request, decision) }
     }
 
+    /// 앱이 직접 띄우는 안내 (훅 복구 등)
+    func notify(_ title: String, _ body: String = "") {
+        showPeek(Peek(sessionID: nil, kind: .info, title: title, body: body))
+    }
+
+    /// 노치에서 세션 카드를 닫음 (다음 이벤트가 오면 다시 나타남)
+    func dismiss(_ sid: String) {
+        endSession(sid)
+    }
+
+    /// 숨김 규칙을 추가하고 지금 해당하는 세션을 모두 숨긴다
+    func addSilenceRule(directory: String? = nil, promptPrefix: String? = nil) {
+        if let directory, !directory.isEmpty, !prefs.silencedDirectories.contains(directory) {
+            prefs.silencedDirectories.append(directory)
+        }
+        if let promptPrefix, !promptPrefix.isEmpty, !prefs.silencedPromptPrefixes.contains(promptPrefix) {
+            prefs.silencedPromptPrefixes.append(promptPrefix)
+        }
+        for session in sessions.values where silenceReason(session) != nil { silence(session.id) }
+    }
+
+    /// 세션을 숨겨야 하는 이유 (없으면 nil)
+    func silenceReason(_ session: Session) -> String? {
+        if let bundle = session.terminal.ancestorBundles.first(where: prefs.blockedLaunchers.contains) {
+            return "차단한 앱에서 실행됨: \(bundle)"
+        }
+        if prefs.hideSessionsWithoutTTY, session.terminal.tty == nil, session.terminal.agentPID != nil {
+            return "터미널 없는 백그라운드 세션"
+        }
+        if let directory = prefs.silencedDirectories.first(where: { !$0.isEmpty && session.cwd.contains($0) }) {
+            return "숨긴 폴더: \(directory)"
+        }
+        if let prompt = session.firstPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            if let prefix = prefs.silencedPromptPrefixes.first(where: { !$0.isEmpty && prompt.hasPrefix($0) }) {
+                return "숨긴 프롬프트: \(prefix)"
+            }
+            if let part = prefs.silencedPromptContains.first(where: { !$0.isEmpty && prompt.contains($0) }) {
+                return "숨긴 프롬프트: \(part)"
+            }
+        }
+        return nil
+    }
+
+    private func silence(_ sid: String) {
+        silenced.insert(sid)
+        endSession(sid)
+    }
+
+    private func endSession(_ sid: String) {
+        sessions[sid] = nil
+        for request in pending where request.sessionID == sid { request.responder.cancel() }
+        pending.removeAll { $0.sessionID == sid }
+        if peek?.sessionID == sid { clearPeek() }
+    }
+
+    /// SessionEnd 없이 에이전트 프로세스가 죽은 세션 정리
+    func reapDeadSessions() {
+        for session in sessions.values {
+            guard let pid = session.terminal.agentPID, pid > 1 else { continue }
+            if kill(pid, 0) != 0 && errno == ESRCH { endSession(session.id) }
+        }
+    }
+
     func clearPeek() {
         peekWork?.cancel()
         peek = nil
@@ -385,7 +477,7 @@ final class SessionStore: ObservableObject {
     // MARK: - statusLine (모델, 컨텍스트, 사용량)
 
     private func ingestStatusLine(_ event: [String: Any], sid: String, source: String, terminal: [String: Any]?) {
-        if sid != "unknown" {
+        if sid != "unknown", !silenced.contains(sid) {
             var session = sessions[sid] ?? Session(id: sid, source: source)
             if let cwd = (event["workspace"] as? [String: Any])?["current_dir"] as? String ?? event["cwd"] as? String,
                session.cwd.isEmpty { session.cwd = cwd }
@@ -460,6 +552,7 @@ final class SessionStore: ObservableObject {
     }
 
     private func showPeek(_ newPeek: Peek) {
+        if isQuiet() { return }
         peekWork?.cancel()
         peek = newPeek
         let work = DispatchWorkItem { [weak self] in self?.peek = nil }

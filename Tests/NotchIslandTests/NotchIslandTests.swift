@@ -4,9 +4,16 @@ import Testing
 @testable import NotchIsland
 
 /// socketpair 한쪽을 Responder에 주고, 다른 쪽에서 앱이 bridge에 보낸 응답을 읽는다.
+/// 테스트가 영원히 멈추지 않도록 읽기 타임아웃 2초
+private func setReadTimeout(_ fd: Int32) {
+    var tv = timeval(tv_sec: 2, tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+}
+
 private func makePair() -> (Responder, LineReader, Int32, Int32) {
     var fds: [Int32] = [0, 0]
     socketpair(AF_UNIX, SOCK_STREAM, 0, &fds)
+    setReadTimeout(fds[1])
     return (Responder(fd: fds[0]), LineReader(fd: fds[1]), fds[0], fds[1])
 }
 
@@ -258,5 +265,123 @@ private func permissionEvent(tool: String, input: [String: Any], suggestions: [A
         let decoded = try #require(Shortcut(encoded: shortcut.encoded))
         #expect(decoded == shortcut)
         #expect(decoded.display == "⌥⌘I")
+    }
+}
+
+@Suite(.serialized) struct SilenceTests {
+    private func makePrefs() -> Prefs {
+        let prefs = Prefs()
+        prefs.blockedLaunchers = Prefs.defaultBlockedLaunchers
+        prefs.silencedDirectories = []
+        prefs.silencedPromptPrefixes = []
+        prefs.silencedPromptContains = []
+        prefs.hideSessionsWithoutTTY = false
+        return prefs
+    }
+
+    @Test func blockedLauncherSessionNeverAppears() throws {
+        let store = SessionStore(prefs: makePrefs())
+        let terminal: [String: Any] = ["ancestor_bundles": ["com.steipete.codexbar"], "agent_pid": 99999]
+        store.ingest(["hook_event_name": "SessionStart", "session_id": "bg", "cwd": "/tmp"], source: "claude", terminal: terminal)
+        #expect(store.sessions["bg"] == nil)
+        #expect(store.silenced.contains("bg"))
+
+        // 같은 세션의 권한 요청은 응답 없이 닫혀서 터미널 프롬프트로 간다
+        var fds: [Int32] = [0, 0]
+        socketpair(AF_UNIX, SOCK_STREAM, 0, &fds)
+        setReadTimeout(fds[1])
+        defer { close(fds[0]); close(fds[1]) }
+        store.ingestPermission(["hook_event_name": "PermissionRequest", "session_id": "bg", "tool_name": "Bash", "tool_input": ["command": "ls"]],
+                               source: "claude", terminal: nil, id: UUID(), responder: Responder(fd: fds[0]))
+        #expect(store.pending.isEmpty)
+        #expect(LineReader(fd: fds[1]).readLine() == nil)
+
+        store.ingest(["hook_event_name": "SessionEnd", "session_id": "bg"], source: "claude", terminal: nil)
+        #expect(!store.silenced.contains("bg"))
+    }
+
+    @Test func directoryAndPromptRules() {
+        let prefs = makePrefs()
+        let store = SessionStore(prefs: prefs)
+        store.ingest(["hook_event_name": "SessionStart", "session_id": "a", "cwd": "/work/experiments/x"], source: "claude", terminal: nil)
+        store.ingest(["hook_event_name": "SessionStart", "session_id": "b", "cwd": "/work/app"], source: "claude", terminal: nil)
+        #expect(store.sessions.count == 2)
+
+        store.addSilenceRule(directory: "/experiments")
+        #expect(store.sessions["a"] == nil)
+        #expect(store.sessions["b"] != nil)
+
+        prefs.silencedPromptPrefixes = ["Generate a title"]
+        store.ingest(["hook_event_name": "UserPromptSubmit", "session_id": "b", "prompt": "Generate a title for this chat"], source: "claude", terminal: nil)
+        #expect(store.sessions["b"] == nil)
+
+        // 두 번째 프롬프트는 규칙 대상이 아니다 (첫 프롬프트만)
+        store.ingest(["hook_event_name": "UserPromptSubmit", "session_id": "c", "cwd": "/work/c", "prompt": "버그 고쳐줘"], source: "claude", terminal: nil)
+        store.ingest(["hook_event_name": "UserPromptSubmit", "session_id": "c", "prompt": "Generate a title"], source: "claude", terminal: nil)
+        #expect(store.sessions["c"] != nil)
+    }
+
+    @Test func noTTYRuleOnlyWhenEnabled() {
+        let prefs = makePrefs()
+        let store = SessionStore(prefs: prefs)
+        let headless: [String: Any] = ["agent_pid": 4242]
+        store.ingest(["hook_event_name": "SessionStart", "session_id": "h1", "cwd": "/w"], source: "claude", terminal: headless)
+        #expect(store.sessions["h1"] != nil)
+        prefs.hideSessionsWithoutTTY = true
+        store.ingest(["hook_event_name": "SessionStart", "session_id": "h2", "cwd": "/w"], source: "claude", terminal: headless)
+        #expect(store.sessions["h2"] == nil)
+    }
+
+    @Test func deadAgentProcessIsReaped() {
+        let store = SessionStore(prefs: makePrefs())
+        // 살아 있는 프로세스(자기 자신)와 존재하지 않는 pid
+        store.ingest(["hook_event_name": "SessionStart", "session_id": "alive", "cwd": "/w"], source: "claude",
+                     terminal: ["agent_pid": Int(getpid()), "tty": "/dev/ttys001"])
+        store.ingest(["hook_event_name": "SessionStart", "session_id": "dead", "cwd": "/w"], source: "claude",
+                     terminal: ["agent_pid": 99_998, "tty": "/dev/ttys002"])
+        store.reapDeadSessions()
+        #expect(store.sessions["alive"] != nil)
+        #expect(store.sessions["dead"] == nil)
+    }
+
+    @Test func quietSuppressesPeek() {
+        let store = SessionStore(prefs: makePrefs())
+        store.isQuiet = { true }
+        store.ingest(["hook_event_name": "StopFailure", "session_id": "q", "error": "x"], source: "claude", terminal: nil)
+        #expect(store.peek == nil)
+        store.isQuiet = { false }
+        store.notify("안내")
+        #expect(store.peek?.kind == .info)
+    }
+}
+
+extension IntegrationTests {
+    @Test func restoresRemovedHooks() throws {
+        NotchPaths.homeOverride = home
+        let prefs = Prefs()
+        prefs.autoRepairHooks = true
+        prefs.managedIntegrations = ["claude"]
+        let store = SessionStore(prefs: prefs)
+        let watcher = HookWatcher(prefs: prefs, store: store)
+
+        try Integrations.install(.claude)
+        // 다른 도구가 settings.json을 통째로 덮어씀
+        try Data(#"{"model":"opus"}"#.utf8).write(to: home.appendingPathComponent(".claude/settings.json"))
+        #expect(!Integrations.isInstalled(.claude))
+
+        watcher.check()
+        #expect(Integrations.isInstalled(.claude))
+        #expect(store.peek?.title == "훅을 복구했어요")
+
+        // 10분 안에 계속 지워지면 포기
+        for _ in 0..<4 {
+            try Data(#"{"model":"opus"}"#.utf8).write(to: home.appendingPathComponent(".claude/settings.json"))
+            watcher.check()
+        }
+        #expect(store.peek?.title == "훅이 계속 지워지고 있어요")
+        try Data(#"{"model":"opus"}"#.utf8).write(to: home.appendingPathComponent(".claude/settings.json"))
+        watcher.check()
+        #expect(!Integrations.isInstalled(.claude))
+        prefs.managedIntegrations = []
     }
 }

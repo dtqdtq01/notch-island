@@ -28,6 +28,10 @@ enum TerminalJumper {
 
         let bundle = terminal.hostBundleID
         var precise = false
+
+        // Warp가 알려준 세션 전용 주소
+        if let url = terminal.warpFocusURL, url.contains("://"), run("/usr/bin/open", [url]) != nil { return }
+
         switch bundle {
         case "com.googlecode.iterm2":
             if let tty = outerTTY.flatMap(safeTTY) { precise = osascript(itermScript(tty)) == "ok" }
@@ -57,7 +61,10 @@ enum TerminalJumper {
         DispatchQueue.main.async {
             guard let bundle, let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first else { return }
             app.activate()
-            raiseWindow(pid: app.processIdentifier, containing: session.projectName)
+            // bridge가 창 제목에 넣은 세션 표식으로 먼저 찾고, 없으면 프로젝트 이름으로
+            if !raiseWindow(pid: app.processIdentifier, containing: marker(for: session.id)) {
+                raiseWindow(pid: app.processIdentifier, containing: session.projectName)
+            }
         }
     }
 
@@ -104,20 +111,26 @@ enum TerminalJumper {
 
     // MARK: - 손쉬운 사용(AX) 창 올리기
 
-    private static func raiseWindow(pid: pid_t, containing name: String) {
-        guard AXIsProcessTrusted(), !name.isEmpty else { return }
+    /// bridge의 TitleMarker와 같은 형식
+    static func marker(for sessionID: String) -> String { "‹\(sessionID.prefix(8))›" }
+
+    @discardableResult
+    private static func raiseWindow(pid: pid_t, containing name: String) -> Bool {
+        guard AXIsProcessTrusted(), !name.isEmpty else { return false }
         let app = AXUIElementCreateApplication(pid)
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
-              let windows = value as? [AXUIElement] else { return }
+              let windows = value as? [AXUIElement] else { return false }
         for window in windows {
             var title: CFTypeRef?
             AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title)
             if let text = title as? String, text.localizedCaseInsensitiveContains(name) {
+                AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
                 AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-                return
+                return true
             }
         }
+        return false
     }
 
     // MARK: - 프로세스 실행

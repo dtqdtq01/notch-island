@@ -1,4 +1,5 @@
 import Carbon.HIToolbox
+import NotchShared
 import Foundation
 
 enum SoundCategory: String, CaseIterable, Identifiable {
@@ -144,6 +145,48 @@ final class Prefs: ObservableObject {
     @Published var quietHoursEnabled = Prefs.load("quietHoursEnabled", false) { didSet { save("quietHoursEnabled", quietHoursEnabled) } }
     @Published var quietStart = Prefs.load("quietStart", 23 * 60) { didSet { save("quietStart", quietStart) } }  // 자정부터 분
     @Published var quietEnd = Prefs.load("quietEnd", 8 * 60) { didSet { save("quietEnd", quietEnd) } }
+
+    // 숨김 규칙 (세션 입장 필터)
+    static let defaultBlockedLaunchers = ["com.steipete.codexbar"]
+    @Published var blockedLaunchers: [String] = Prefs.load("blockedLaunchers", Prefs.defaultBlockedLaunchers) { didSet { save("blockedLaunchers", blockedLaunchers) } }
+    @Published var silencedDirectories: [String] = Prefs.load("silencedDirectories", []) { didSet { save("silencedDirectories", silencedDirectories) } }
+    @Published var silencedPromptPrefixes: [String] = Prefs.load("silencedPromptPrefixes", []) { didSet { save("silencedPromptPrefixes", silencedPromptPrefixes) } }
+    @Published var silencedPromptContains: [String] = Prefs.load("silencedPromptContains", []) { didSet { save("silencedPromptContains", silencedPromptContains) } }
+    @Published var hideSessionsWithoutTTY = Prefs.load("hideSessionsWithoutTTY", false) { didSet { save("hideSessionsWithoutTTY", hideSessionsWithoutTTY) } }
+
+    // 방해 금지
+    @Published var quietDuringScreenShare = Prefs.load("quietDuringScreenShare", true) { didSet { save("quietDuringScreenShare", quietDuringScreenShare) } }
+    @Published var quietDuringFocus = Prefs.load("quietDuringFocus", true) { didSet { save("quietDuringFocus", quietDuringFocus) } }
+
+    // 연동 유지
+    @Published var autoRepairHooks = Prefs.load("autoRepairHooks", true) { didSet { save("autoRepairHooks", autoRepairHooks) } }
+    /// 사용자가 앱에서 설치한 연동 (claude, codex, statusline) — 이것만 자동 복구한다
+    @Published var managedIntegrations: [String] = Prefs.load("managedIntegrations", []) { didSet { save("managedIntegrations", managedIntegrations) } }
+    @Published var titleMarkerEnabled = Prefs.load("titleMarkerEnabled", true) {
+        didSet {
+            save("titleMarkerEnabled", titleMarkerEnabled)
+            Prefs.syncTitleMarkerFlag(titleMarkerEnabled)
+        }
+    }
+
+    /// bridge는 UserDefaults를 못 읽으므로 파일 하나로 끔/켬을 알린다
+    static func syncTitleMarkerFlag(_ enabled: Bool) {
+        let flag = NotchPaths.titleMarkerDisabled
+        if enabled {
+            try? FileManager.default.removeItem(at: flag)
+        } else {
+            try? FileManager.default.createDirectory(at: NotchPaths.root, withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: flag.path, contents: Data())
+        }
+    }
+
+    func setManaged(_ id: String, _ managed: Bool) {
+        if managed {
+            if !managedIntegrations.contains(id) { managedIntegrations.append(id) }
+        } else {
+            managedIntegrations.removeAll { $0 == id }
+        }
+    }
 
     // 단축키
     @Published var shortcutsEnabled = Prefs.load("shortcutsEnabled", true) { didSet { save("shortcutsEnabled", shortcutsEnabled) } }

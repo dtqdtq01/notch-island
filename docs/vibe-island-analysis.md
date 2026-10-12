@@ -54,3 +54,12 @@
 7. 이벤트 정리 규칙(auth_success 무시, 중복 질문 제거, SessionEnd complete 무시)
 8. 키체인 OAuth 사용량 API(상태줄 없이도 사용량), 다른 제공자
 9. Space 이동, VS Code 확장으로 정확한 터미널 탭, SSH 원격, Bark 푸시
+
+## 5. 반영 현황
+| 항목 | 상태 |
+|---|---|
+| 1. 세션 입장 필터 + 숨김 규칙 | ✅ bridge가 조상 앱 번들 ID 수집, 앱이 규칙 판단(차단 앱·폴더·첫 프롬프트·TTY 없음), 우클릭 메뉴, 숨김 세션 권한 요청은 터미널로 |
+| 2. OSC2 제목 마커 정밀 점프 | ✅ Ghostty·Warp·Alacritty·Hyper·Tabby·Rio·(원격제어 꺼진)kitty, tmux 안에서는 안 씀, Warp는 `WARP_FOCUS_URL` 우선 |
+| 3. 방해 금지 | ✅ `CGSIsScreenWatcherPresent`(dlsym, 없으면 감지 안 함) + `~/Library/DoNotDisturb/DB/Assertions.json`(전체 디스크 접근 필요) |
+| 4. 훅 자동 복구 | ✅ 5초 폴링, 사용자가 설치한 연동만, 10분 3회 초과 시 중단 |
+| 5. 이벤트 정리 | ✅ 프로세스 생존 감시(agent_pid), tool_response 제거·100KB 초과 문자열 자르기, `NOTCH_ISLAND_SKIP`. Stop 합성·중복 질문 제거는 Claude 훅 흐름에서 필요 없어 생략 |

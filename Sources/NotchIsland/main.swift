@@ -5,6 +5,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var store = SessionStore(prefs: prefs)
     private lazy var sounds = SoundPlayer(prefs: prefs)
     private let usage = UsageStore()
+    private lazy var quiet = QuietMonitor(prefs: prefs)
+    private var hookWatcher: HookWatcher?
     private var server: SocketServer?
     private var notch: NotchPanelController?
     private var settings: SettingsWindowController?
@@ -12,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Integrations.installBridge()
+        Prefs.syncTitleMarkerFlag(prefs.titleMarkerEnabled)
+        adoptExistingIntegrations()
 
         let server = SocketServer(store: store)
         do {
@@ -27,11 +31,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         self.server = server
 
-        store.onSound = { [weak self] in self?.sounds.play($0) }
+        store.isQuiet = { [weak self] in self?.quiet.isQuiet ?? false }
+        store.onSound = { [weak self] category in
+            guard let self, !self.quiet.isQuiet else { return }
+            self.sounds.play(category)
+        }
+        hookWatcher = HookWatcher(prefs: prefs, store: store)
         settings = SettingsWindowController(
-            prefs: prefs, usage: usage, sounds: sounds,
-            onShortcutsChanged: { [weak self] in self?.registerHotkeys() })
-        notch = NotchPanelController(store: store, prefs: prefs) { [weak self] in self?.settings?.show() }
+            prefs: prefs, usage: usage, sounds: sounds, quiet: quiet,
+            onShortcutsChanged: { [weak self] in self?.registerHotkeys() },
+            onIntegrationsChanged: { [weak self] in self?.hookWatcher?.reset() })
+        notch = NotchPanelController(store: store, prefs: prefs, quiet: quiet) { [weak self] in self?.settings?.show() }
         registerHotkeys()
         setupStatusItem()
 
@@ -39,6 +49,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !Integrations.Agent.allCases.contains(where: Integrations.isInstalled) {
             settings?.show(tab: .integrations)
         }
+    }
+
+    /// 이전 버전에서 이미 설치한 연동도 자동 복구 대상으로 등록 (한 번만)
+    private func adoptExistingIntegrations() {
+        guard !UserDefaults.standard.bool(forKey: "adoptedIntegrations") else { return }
+        UserDefaults.standard.set(true, forKey: "adoptedIntegrations")
+        for agent in Integrations.Agent.allCases where Integrations.isInstalled(agent) {
+            prefs.setManaged(agent.rawValue, true)
+        }
+        if Integrations.isStatusLineInstalled { prefs.setManaged("statusline", true) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

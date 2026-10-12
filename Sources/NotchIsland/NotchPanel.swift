@@ -100,6 +100,7 @@ final class NotchPanelController {
     private let panel = NotchPanel()
     private let store: SessionStore
     private let prefs: Prefs
+    private let quiet: QuietMonitor
     let model = NotchViewModel()
     private var cancellables = Set<AnyCancellable>()
     private var collapseWork: DispatchWorkItem?
@@ -109,20 +110,28 @@ final class NotchPanelController {
     private var frontIsFullscreen = false
     private var appBeforeSwitcher: NSRunningApplication?
 
-    init(store: SessionStore, prefs: Prefs, openSettings: @escaping () -> Void) {
+    init(store: SessionStore, prefs: Prefs, quiet: QuietMonitor, openSettings: @escaping () -> Void) {
         self.store = store
         self.prefs = prefs
+        self.quiet = quiet
         let root = NotchRootView(
             store: store, model: model, prefs: prefs,
             onJump: { [weak self] session in self?.jump(session) },
             onToggle: { [weak self] in self?.togglePinned() },
+            onSilence: { [weak store] session, kind in
+                switch kind {
+                case .directory: store?.addSilenceRule(directory: session.cwd)
+                case .prompt: store?.addSilenceRule(promptPrefix: session.firstPrompt.map { String($0.prefix(40)) })
+                case .dismiss: store?.dismiss(session.id)
+                }
+            },
             onSettings: openSettings)
         let host = HoverHostingView(rootView: root)
         host.onHoverChange = { [weak self] inside in self?.hoverChanged(inside) }
         panel.contentView = host
 
         store.objectWillChange
-            .merge(with: model.objectWillChange, prefs.objectWillChange)
+            .merge(with: model.objectWillChange, prefs.objectWillChange, quiet.objectWillChange)
             .receive(on: RunLoop.main)
             .sink { [weak self] in self?.layout() }
             .store(in: &cancellables)
@@ -232,6 +241,8 @@ final class NotchPanelController {
 
     private func desiredMode() -> NotchMode {
         if model.switcherIndex != nil || model.pinned || model.hovering { return .expanded }
+        // 화면 공유·집중 모드 중에는 스스로 튀어나오지 않는다 (접힌 노치의 개수 표시는 유지)
+        if quiet.isQuiet { return .collapsed }
         if !store.pending.isEmpty && prefs.autoExpandOnRequest { return .expanded }
         if store.peek != nil { return .peek }
         return .collapsed

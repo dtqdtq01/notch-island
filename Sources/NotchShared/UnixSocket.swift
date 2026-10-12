@@ -109,4 +109,6 @@ public extension NotchPaths {
     static var rateLimitsCache: URL { cacheDir.appendingPathComponent("rate-limits.json") }
     /// 연동 전에 쓰던 statusLine 명령. bridge가 이어서 실행해 준다.
     static var previousStatusLine: URL { root.appendingPathComponent("statusline-prev") }
+    /// 이 파일이 있으면 bridge가 창 제목 표식을 쓰지 않는다
+    static var titleMarkerDisabled: URL { root.appendingPathComponent("title-marker-disabled") }
 }

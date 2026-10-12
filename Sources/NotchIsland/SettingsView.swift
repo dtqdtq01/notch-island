@@ -8,20 +8,26 @@ final class SettingsWindowController {
     private let prefs: Prefs
     private let usage: UsageStore
     private let sounds: SoundPlayer
+    private let quiet: QuietMonitor
     private let onShortcutsChanged: () -> Void
+    private let onIntegrationsChanged: () -> Void
 
-    init(prefs: Prefs, usage: UsageStore, sounds: SoundPlayer, onShortcutsChanged: @escaping () -> Void) {
+    init(prefs: Prefs, usage: UsageStore, sounds: SoundPlayer, quiet: QuietMonitor,
+         onShortcutsChanged: @escaping () -> Void, onIntegrationsChanged: @escaping () -> Void) {
         self.prefs = prefs
         self.usage = usage
         self.sounds = sounds
+        self.quiet = quiet
         self.onShortcutsChanged = onShortcutsChanged
+        self.onIntegrationsChanged = onIntegrationsChanged
     }
 
     func show(tab: SettingsTab = .general) {
         if window == nil {
             let view = SettingsView(
-                prefs: prefs, usage: usage, sounds: sounds,
-                initialTab: tab, onShortcutsChanged: onShortcutsChanged)
+                prefs: prefs, usage: usage, sounds: sounds, quiet: quiet,
+                initialTab: tab, onShortcutsChanged: onShortcutsChanged,
+                onIntegrationsChanged: onIntegrationsChanged)
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
                 styleMask: [.titled, .closable, .miniaturizable],
@@ -38,12 +44,13 @@ final class SettingsWindowController {
 }
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general, sound, shortcuts, usage, integrations, about
+    case general, silence, sound, shortcuts, usage, integrations, about
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .general: return "일반"
+        case .silence: return "숨김"
         case .sound: return "사운드"
         case .shortcuts: return "단축키"
         case .usage: return "사용량"
@@ -55,6 +62,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: return "gearshape"
+        case .silence: return "eye.slash"
         case .sound: return "speaker.wave.2"
         case .shortcuts: return "command"
         case .usage: return "chart.bar"
@@ -68,8 +76,10 @@ struct SettingsView: View {
     @ObservedObject var prefs: Prefs
     @ObservedObject var usage: UsageStore
     let sounds: SoundPlayer
+    @ObservedObject var quiet: QuietMonitor
     @State var initialTab: SettingsTab
     let onShortcutsChanged: () -> Void
+    let onIntegrationsChanged: () -> Void
 
     var body: some View {
         TabView(selection: $initialTab) {
@@ -85,11 +95,12 @@ struct SettingsView: View {
     @ViewBuilder
     private func content(_ tab: SettingsTab) -> some View {
         switch tab {
-        case .general: GeneralSettings(prefs: prefs)
+        case .general: GeneralSettings(prefs: prefs, quiet: quiet)
+        case .silence: SilenceSettings(prefs: prefs)
         case .sound: SoundSettings(prefs: prefs, sounds: sounds)
         case .shortcuts: ShortcutSettings(prefs: prefs, onChanged: onShortcutsChanged)
         case .usage: UsageDashboard(usage: usage)
-        case .integrations: IntegrationSettings()
+        case .integrations: IntegrationSettings(prefs: prefs, onChanged: onIntegrationsChanged)
         case .about: AboutView()
         }
     }
@@ -99,6 +110,7 @@ struct SettingsView: View {
 
 struct GeneralSettings: View {
     @ObservedObject var prefs: Prefs
+    @ObservedObject var quiet: QuietMonitor
     @State private var launchAtLogin = Integrations.launchAtLogin
     @State private var loginError: String?
 
@@ -121,6 +133,22 @@ struct GeneralSettings: View {
                 Toggle("AI 모델 표시", isOn: $prefs.showModel)
                 Toggle("서브에이전트 수 표시", isOn: $prefs.showSubagents)
                 Toggle("사용 한도(5시간/7일) 표시", isOn: $prefs.showUsage)
+            }
+            Section("방해 금지") {
+                Toggle("화면 공유·녹화 중에는 조용히", isOn: $prefs.quietDuringScreenShare)
+                Toggle("집중 모드(방해 금지 등)에는 조용히", isOn: $prefs.quietDuringFocus)
+                if prefs.quietDuringFocus && !quiet.focusReadable {
+                    HStack {
+                        Text("집중 모드를 감지하려면 '전체 디스크 접근 권한'이 필요해요.")
+                            .font(.caption).foregroundStyle(.orange)
+                        Spacer()
+                        Button("설정 열기") {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
+                        }
+                    }
+                }
+                Text(quiet.reason.map { "지금: \($0) — 노치가 저절로 펼쳐지지 않고 효과음도 꺼져요" } ?? "조용히 할 때는 노치가 저절로 펼쳐지지 않고 효과음도 꺼져요. 접힌 노치의 개수 표시는 그대로예요.")
+                    .font(.caption).foregroundStyle(quiet.reason == nil ? Color.secondary : Color.orange)
             }
             Section("사용량 경고") {
                 Toggle("사용 한도 경고", isOn: $prefs.usageAlert)
@@ -424,6 +452,8 @@ struct DailyBars: View {
 // MARK: - 연동
 
 struct IntegrationSettings: View {
+    @ObservedObject var prefs: Prefs
+    let onChanged: () -> Void
     @State private var refresh = 0
     @State private var message: String?
     @State private var axTrusted = AXIsProcessTrusted()
@@ -438,9 +468,15 @@ struct IntegrationSettings: View {
                             .foregroundStyle(installed ? .green : .secondary)
                         Spacer()
                         if installed {
-                            Button("제거") { perform { try Integrations.uninstall(agent) } }
+                            Button("제거") {
+                                perform { try Integrations.uninstall(agent) }
+                                prefs.setManaged(agent.rawValue, false)
+                            }
                         } else {
-                            Button("설치") { perform { try Integrations.install(agent) } }
+                            Button("설치") {
+                                perform { try Integrations.install(agent) }
+                                prefs.setManaged(agent.rawValue, true)
+                            }
                                 .disabled(!Integrations.isAgentPresent(agent))
                         }
                     }
@@ -464,9 +500,16 @@ struct IntegrationSettings: View {
                     Spacer()
                     Button(installed ? "제거" : "설치") {
                         perform { installed ? try Integrations.uninstallStatusLine() : try Integrations.installStatusLine() }
+                        prefs.setManaged("statusline", !installed)
                     }
                 }
                 Text("기존 statusLine 명령은 보존해서 이어서 실행해요.").font(.caption).foregroundStyle(.secondary)
+            }
+            Section("연동 유지·정밀 점프") {
+                Toggle("다른 도구가 훅을 지우면 자동으로 복구", isOn: $prefs.autoRepairHooks)
+                Toggle("창 제목에 세션 표식 넣기 (Ghostty·Warp·Alacritty 등 정밀 점프)", isOn: $prefs.titleMarkerEnabled)
+                Text("표식 예: 'my-app ‹1a2b3c4d›'. 손쉬운 사용 권한이 있어야 표식으로 창을 찾을 수 있어요.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("권한") {
                 HStack {
@@ -495,6 +538,7 @@ struct IntegrationSettings: View {
     private func perform(_ action: () throws -> Void) {
         do {
             try action()
+            onChanged()
             message = "✓ 적용됨"
         } catch {
             message = "실패: \(error.localizedDescription)"
@@ -524,5 +568,97 @@ struct AboutView: View {
             .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - 숨김
+
+struct SilenceSettings: View {
+    @ObservedObject var prefs: Prefs
+
+    var body: some View {
+        Form {
+            Section {
+                Text("규칙에 맞는 세션은 노치에 나타나지 않고, 권한 요청도 평소처럼 터미널에서 물어봐요. 세션 카드를 우클릭해서 바로 추가할 수도 있어요.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Toggle("터미널 없이 돌아가는 백그라운드 세션 숨기기", isOn: $prefs.hideSessionsWithoutTTY)
+                Text("claude -p 같은 스크립트 실행을 숨겨요. Claude Desktop처럼 터미널 없는 앱의 세션도 같이 숨겨질 수 있어요.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            RuleList(
+                title: "차단한 실행 앱 (번들 ID)",
+                hint: "이 앱이 띄운 claude/codex 세션은 무시해요. 사용량 조회 도구 같은 백그라운드 프로그램용.",
+                placeholder: "예: com.steipete.codexbar",
+                rules: $prefs.blockedLaunchers,
+                pickApp: true)
+            RuleList(
+                title: "숨길 폴더",
+                hint: "작업 폴더 경로에 이 문자열이 들어 있으면 숨겨요.",
+                placeholder: "예: /experiments",
+                rules: $prefs.silencedDirectories)
+            RuleList(
+                title: "숨길 첫 프롬프트 (시작)",
+                hint: "세션의 첫 프롬프트가 이 문자열로 시작하면 숨겨요.",
+                placeholder: "예: Generate a title",
+                rules: $prefs.silencedPromptPrefixes)
+            RuleList(
+                title: "숨길 첫 프롬프트 (포함)",
+                hint: "세션의 첫 프롬프트에 이 문자열이 들어 있으면 숨겨요.",
+                placeholder: "예: memory consolidation",
+                rules: $prefs.silencedPromptContains)
+            Section {
+                Text("환경변수 NOTCH_ISLAND_SKIP=1 로 실행한 세션도 무시해요. 예: NOTCH_ISLAND_SKIP=1 claude -p \"…\"")
+                    .font(.caption.monospaced()).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+struct RuleList: View {
+    let title: String
+    let hint: String
+    let placeholder: String
+    @Binding var rules: [String]
+    var pickApp = false
+    @State private var draft = ""
+
+    var body: some View {
+        Section(title) {
+            Text(hint).font(.caption).foregroundStyle(.secondary)
+            ForEach(rules, id: \.self) { rule in
+                HStack {
+                    Text(rule).font(.system(size: 12, design: .monospaced))
+                    Spacer()
+                    Button { rules.removeAll { $0 == rule } } label: { Image(systemName: "minus.circle.fill") }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.red)
+                }
+            }
+            HStack {
+                TextField(placeholder, text: $draft)
+                    .onSubmit(add)
+                Button("추가", action: add).disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                if pickApp {
+                    Button("앱 선택…", action: chooseApp)
+                }
+            }
+        }
+    }
+
+    private func add() {
+        let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !rules.contains(value) else { return }
+        rules.append(value)
+        draft = ""
+    }
+
+    private func chooseApp() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        guard panel.runModal() == .OK, let url = panel.url,
+              let id = Bundle(url: url)?.bundleIdentifier, !rules.contains(id) else { return }
+        rules.append(id)
     }
 }

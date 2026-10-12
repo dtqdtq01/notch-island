@@ -23,12 +23,15 @@ struct NotchShape: Shape {
     }
 }
 
+enum SilenceAction { case directory, prompt, dismiss }
+
 struct NotchRootView: View {
     @ObservedObject var store: SessionStore
     @ObservedObject var model: NotchViewModel
     @ObservedObject var prefs: Prefs
     let onJump: (Session) -> Void
     let onToggle: () -> Void
+    let onSilence: (Session, SilenceAction) -> Void
     let onSettings: () -> Void
 
     var body: some View {
@@ -52,7 +55,7 @@ struct NotchRootView: View {
                         }
                 }
             case .expanded:
-                ExpandedView(store: store, model: model, prefs: prefs, onJump: onJump, onSettings: onSettings)
+                ExpandedView(store: store, model: model, prefs: prefs, onJump: onJump, onSilence: onSilence, onSettings: onSettings)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -128,6 +131,7 @@ struct PeekView: View {
         case .complete: return "checkmark.circle.fill"
         case .error: return "exclamationmark.triangle.fill"
         case .usage: return "gauge.with.dots.needle.67percent"
+        case .info: return "info.circle.fill"
         }
     }
 
@@ -136,6 +140,7 @@ struct PeekView: View {
         case .complete: return .green
         case .error: return .red
         case .usage: return .orange
+        case .info: return .blue
         }
     }
 }
@@ -145,6 +150,7 @@ struct ExpandedView: View {
     @ObservedObject var model: NotchViewModel
     @ObservedObject var prefs: Prefs
     let onJump: (Session) -> Void
+    let onSilence: (Session, SilenceAction) -> Void
     let onSettings: () -> Void
 
     var body: some View {
@@ -172,6 +178,17 @@ struct ExpandedView: View {
                                     .id(session.id)
                                     .contentShape(Rectangle())
                                     .onTapGesture { if !prefs.disableClickToJump { onJump(session) } }
+                                    .contextMenu {
+                                        Button("터미널로 이동") { onJump(session) }
+                                        Divider()
+                                        if !session.cwd.isEmpty {
+                                            Button("이 폴더의 세션 숨기기") { onSilence(session, .directory) }
+                                        }
+                                        if let prompt = session.firstPrompt, !prompt.isEmpty {
+                                            Button("\"\(String(prompt.prefix(20)))…\"로 시작하면 숨기기") { onSilence(session, .prompt) }
+                                        }
+                                        Button("카드 닫기") { onSilence(session, .dismiss) }
+                                    }
                             }
                         }
                     }
