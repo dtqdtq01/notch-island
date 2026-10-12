@@ -55,7 +55,14 @@ mkdir -p "$DMGSRC"
 cp -R "$APP" "$DMGSRC/"
 ln -s /Applications "$DMGSRC/Applications"
 cp Resources/FIRST_OPEN.txt "$DMGSRC/처음 열 때 읽어주세요.txt"
-hdiutil create -quiet -volname "Notch Island $VERSION" -srcfolder "$DMGSRC" -ov -format UDZO "$DIST/NotchIsland-$VERSION.dmg"
+# hdiutil은 Spotlight 색인 등으로 가끔 '리소스 사용 중'으로 실패해서 몇 번 다시 시도한다
+for TRY in 1 2 3; do
+  if hdiutil create -volname "Notch Island $VERSION" -srcfolder "$DMGSRC" -ov -format UDZO "$DIST/NotchIsland-$VERSION.dmg" >/dev/null; then
+    break
+  fi
+  [[ $TRY == 3 ]] && { echo "✗ DMG 만들기 실패"; exit 1; }
+  echo "  DMG 다시 시도 ($TRY)"; sleep 2
+done
 if [[ -n "$NOTCH_SIGN_IDENTITY" ]]; then
   codesign --force --timestamp --sign "$NOTCH_SIGN_IDENTITY" "$DIST/NotchIsland-$VERSION.dmg"
 fi
