@@ -31,10 +31,12 @@ enum Integrations {
                     ("PreCompact", nil, nil), ("PostCompact", nil, nil),
                 ]
             case .codex:
+                // Codex(ChatGPT 앱 포함)가 지원하는 이벤트
                 return [
                     ("SessionStart", nil, 5), ("SessionEnd", nil, 3), ("UserPromptSubmit", nil, 5),
-                    ("PostToolUse", "", 5), ("PermissionRequest", nil, 7200), ("Stop", nil, 5),
-                    ("SubagentStart", nil, 5), ("SubagentStop", nil, 5),
+                    ("PreToolUse", "", 5), ("PostToolUse", "", 5), ("PermissionRequest", nil, 7200),
+                    ("Stop", nil, 5), ("SubagentStart", nil, 5), ("SubagentStop", nil, 5),
+                    ("PreCompact", nil, 5), ("PostCompact", nil, 5),
                 ]
             }
         }

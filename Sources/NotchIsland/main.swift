@@ -141,6 +141,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
+// 명령줄: NotchIsland --install claude|codex|statusline  /  --uninstall …
+// (화면 없이 연동만 설치하고 끝낸다. 실행 중인 앱은 그대로 둔다)
+if let flagIndex = CommandLine.arguments.firstIndex(where: { $0 == "--install" || $0 == "--uninstall" }),
+   flagIndex + 1 < CommandLine.arguments.count {
+    let installing = CommandLine.arguments[flagIndex] == "--install"
+    let target = CommandLine.arguments[flagIndex + 1]
+    do {
+        if target == "statusline" {
+            try installing ? Integrations.installStatusLine() : Integrations.uninstallStatusLine()
+        } else if let agent = Integrations.Agent(rawValue: target) {
+            try installing ? Integrations.install(agent) : Integrations.uninstall(agent)
+        } else {
+            FileHandle.standardError.write(Data("알 수 없는 대상: \(target) (claude, codex, statusline)\n".utf8))
+            exit(2)
+        }
+        Prefs.shared.setManaged(target, installing)
+        print(installing ? "✓ \(target) 연동 설치" : "✓ \(target) 연동 제거")
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("실패: \(error.localizedDescription)\n".utf8))
+        exit(1)
+    }
+}
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
