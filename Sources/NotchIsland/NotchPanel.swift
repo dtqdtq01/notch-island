@@ -31,9 +31,9 @@ enum NotchMode { case collapsed, peek, expanded }
 enum Metrics {
     static let sideWidth: CGFloat = 40
     /// "자세히" 레이아웃에서 접힌 노치 양옆 폭
-    static let detailedSideWidth: CGFloat = 120
+    static let detailedSideWidth: CGFloat = 150
     static func sideWidth(detailed: Bool) -> CGFloat { detailed ? detailedSideWidth : sideWidth }
-    static let expandedWidth: CGFloat = 540
+    static let expandedWidth: CGFloat = 620
     static let headerHeight: CGFloat = 28
     static let rowHeight: CGFloat = 48
     static let maxRows = 6
@@ -65,6 +65,10 @@ final class NotchViewModel: ObservableObject {
     @Published var mode: NotchMode = .collapsed
     /// 노치 몸통의 목표 크기 (위쪽 귀 제외). 뷰가 스프링으로 따라간다.
     @Published var size: CGSize = .zero
+    /// 펼친 내용이 실제로 차지하는 높이 (뷰가 재서 알려준다)
+    @Published var contentHeight: CGFloat = 0
+    /// "Show all N sessions"
+    @Published var showAll = false
     @Published var hovering = false
     @Published var pinned = false
     @Published var switcherIndex: Int?
@@ -297,9 +301,10 @@ final class NotchPanelController {
         let size: CGSize
         switch mode {
         case .collapsed: size = collapsedSize()
-        case .peek: size = CGSize(width: Metrics.expandedWidth - 80, height: model.geometry.notchHeight + Metrics.peekHeight)
+        case .peek: size = peekSize()
         case .expanded: size = expandedSize()
         }
+        if mode == .collapsed && model.showAll { model.showAll = false }
         // 모드와 크기를 같은 트랜잭션에서 바꿔야 스프링이 한 번에 움직인다
         if model.mode != mode || model.size != size {
             withAnimation(NotchMotion.spring) {
@@ -341,15 +346,21 @@ final class NotchPanelController {
         return CGSize(width: g.notchWidth + sides, height: g.notchHeight)
     }
 
+    /// 내용을 잰 높이를 쓴다. 아직 못 쟀으면 대략값으로 시작했다가 재는 대로 스프링으로 맞춘다.
     private func expandedSize() -> CGSize {
         let g = model.geometry
-        var height = g.notchHeight + 6 + Metrics.headerHeight
-        if let request = store.pending.first { height += Metrics.cardHeight(request) + 8 }
-        let rows = min(store.sessions.count, Metrics.maxRows)
-        height += rows == 0 ? 44 : CGFloat(rows) * Metrics.rowHeight
-        height += 14
-        let maxHeight = g.screen.frame.height * 0.8
-        return CGSize(width: max(Metrics.expandedWidth, g.notchWidth + 140), height: min(height, maxHeight))
+        let estimate = g.notchHeight + 60 + CGFloat(min(store.sessions.count, 5)) * 62 + (store.pending.isEmpty ? 0 : 220)
+        let height = model.mode == .expanded && model.contentHeight > 0 ? model.contentHeight : estimate
+        return CGSize(width: max(Metrics.expandedWidth, g.notchWidth + 160), height: min(height, g.screen.frame.height * 0.8))
+    }
+
+    private func peekSize() -> CGSize {
+        let g = model.geometry
+        let isCompletion = store.peek?.kind == .complete
+        let width = isCompletion ? max(Metrics.expandedWidth, g.notchWidth + 160) : 480
+        let estimate = g.notchHeight + (isCompletion ? 150 : 64)
+        let height = model.mode == .peek && model.contentHeight > 0 ? model.contentHeight : estimate
+        return CGSize(width: width, height: min(height, g.screen.frame.height * 0.6))
     }
 
     // MARK: - 전체화면 감지

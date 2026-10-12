@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Integrations.installBridge()
+        NotchFonts.register()
         Prefs.syncTitleMarkerFlag(prefs.titleMarkerEnabled)
         adoptExistingIntegrations()
 

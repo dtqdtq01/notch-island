@@ -9,6 +9,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers"
 cp Resources/Info.plist "$APP/Contents/"
 cp "$BIN/NotchIsland" "$APP/Contents/MacOS/"
 cp "$BIN/notch-bridge" "$APP/Contents/Helpers/"
+mkdir -p "$APP/Contents/Resources/Fonts"
+cp Resources/Fonts/* "$APP/Contents/Resources/Fonts/"
 codesign --force --deep --sign - "$APP" >/dev/null
 
 mkdir -p ~/.notch-island/bin

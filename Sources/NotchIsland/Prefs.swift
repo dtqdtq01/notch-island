@@ -133,7 +133,7 @@ final class Prefs: ObservableObject {
     @Published var showUsage = Prefs.load("showUsage", true) { didSet { save("showUsage", showUsage) } }
     @Published var disableClickToJump = Prefs.load("disableClickToJump", false) { didSet { save("disableClickToJump", disableClickToJump) } }
 
-    @Published var detailedLayout = Prefs.load("detailedLayout", false) { didSet { save("detailedLayout", detailedLayout) } }
+    @Published var detailedLayout = Prefs.load("detailedLayout", true) { didSet { save("detailedLayout", detailedLayout) } }
 
     // 자리 비움 리마인더
     @Published var idleReminder = Prefs.load("idleReminder", true) { didSet { save("idleReminder", idleReminder) } }

@@ -72,6 +72,26 @@ struct TerminalInfo {
         tty == nil && bundleID == nil && termProgram == nil && agentPID == nil && ancestorBundles.isEmpty
     }
 
+    /// 태그에 보여줄 터미널/편집기 이름
+    var appName: String? {
+        switch hostBundleID {
+        case "com.googlecode.iterm2": return "iTerm"
+        case "com.apple.Terminal": return "Terminal"
+        case "com.mitchellh.ghostty": return "Ghostty"
+        case "dev.warp.Warp-Stable", "dev.warp.Warp-Preview": return "Warp"
+        case "com.github.wez.wezterm": return "WezTerm"
+        case "net.kovidgoyal.kitty": return "kitty"
+        case "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders": return "VS Code"
+        case "com.todesktop.230313mzl4w4u92": return "Cursor"
+        case "com.exafunction.windsurf": return "Windsurf"
+        case "dev.zed.Zed": return "Zed"
+        case "co.zeit.hyper": return "Hyper"
+        case "org.alacritty": return "Alacritty"
+        case "com.cmuxterm.app": return "cmux"
+        default: return nil
+        }
+    }
+
     /// 실제 창을 띄운 앱의 번들 ID
     var hostBundleID: String? {
         if let bundleID { return bundleID }
@@ -97,11 +117,40 @@ struct Session: Identifiable {
     var contextPercent: Double?
     var subagents = 0
     var firstPrompt: String?
+    var lastPrompt: String?
+    var lastResponse: String?
+    /// 지금 쓰는 도구 (접힌 노치의 "Writing" 같은 글자)
+    var currentTool: String?
     var terminal = TerminalInfo(nil)
     var updatedAt = Date()
 
     var projectName: String {
         cwd.isEmpty ? String(id.prefix(8)) : (cwd as NSString).lastPathComponent
+    }
+
+    /// "project · 첫 프롬프트"
+    var title: String {
+        guard let prompt = firstPrompt?.split(separator: "\n").first.map(String.init), !prompt.isEmpty else { return projectName }
+        return "\(projectName) · \(prompt)"
+    }
+
+    /// 작업 중일 때 노치에 보여줄 동사
+    var activity: String {
+        switch status {
+        case .compacting: return "Compacting…"
+        case .running:
+            switch currentTool {
+            case "Write", "Edit", "MultiEdit", "NotebookEdit": return "Writing"
+            case "Read": return "Reading"
+            case "Bash": return "Running"
+            case "Grep", "Glob", "LS": return "Searching"
+            case "WebFetch", "WebSearch": return "Browsing"
+            case "Task", "Agent": return "Delegating"
+            case "TodoWrite": return "Planning"
+            default: return "Working…"
+            }
+        default: return projectName
+        }
     }
 
     var sourceLabel: String {
@@ -157,6 +206,8 @@ enum Decision {
     case denyWithMessage(String)
     /// 계획 승인 + 이후 권한 모드 (nil이면 그대로)
     case approvePlan(mode: String?)
+    /// 허용하고 이 세션은 권한 확인을 모두 건너뜀
+    case bypass
     /// AskUserQuestion 답변: 질문 원문 → 문자열 또는 [문자열]
     case answer([String: Any])
     /// 노치에서는 답하지 않고 터미널 프롬프트로 넘김
@@ -274,12 +325,16 @@ final class SessionStore: ObservableObject {
             if (event["source"] as? String) == "startup" { onSound?(.sessionStart) }
         case "UserPromptSubmit":
             session.status = .running
+            session.lastPrompt = event["prompt"] as? String
+            session.lastResponse = nil
+            session.currentTool = nil
             session.detail = oneLine(event["prompt"] as? String ?? "")
             if peek?.sessionID == sid { clearPeek() }
             onSound?(.taskAcknowledge)
             detectSpam()
         case "PreToolUse":
             session.status = hasPending(sid) ? .waitingApproval : .running
+            session.currentTool = event["tool_name"] as? String
             session.detail = toolSummary(event)
         case "PostToolUse":
             if !hasPending(sid) { session.status = .running }
@@ -303,6 +358,10 @@ final class SessionStore: ObservableObject {
         case "Stop":
             session.status = .done
             session.subagents = 0
+            session.currentTool = nil
+            if let message = event["last_assistant_message"] as? String, !message.isEmpty {
+                session.lastResponse = message
+            }
             session.detail = "턴 완료"
             onSound?(.taskComplete)
             showCompletion(sid: sid, event: event)
@@ -394,6 +453,9 @@ final class SessionStore: ObservableObject {
             let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
             body = ["behavior": "deny", "message": text.isEmpty ? "사용자가 Notch Island에서 거부했습니다" : text]
             note = "의견 보냄"
+        case .bypass:
+            body = ["behavior": "allow", "updatedPermissions": [["type": "setMode", "mode": "bypassPermissions", "destination": "session"]]]
+            note = "Bypass 켬"
         case .approvePlan(let mode):
             body = ["behavior": "allow"]
             if let mode {
@@ -586,9 +648,11 @@ final class SessionStore: ObservableObject {
         }
         let transcript = event["transcript_path"] as? String
         DispatchQueue.global(qos: .utility).async {
-            let text = transcript.flatMap(Self.lastAssistantText) ?? "턴을 마쳤어요"
+            let found = transcript.flatMap(Self.lastAssistantText)
+            let text = found ?? "턴을 마쳤어요"
             DispatchQueue.main.async {
                 guard self.sessions[sid]?.status == .done else { return }
+                if let found { self.sessions[sid]?.lastResponse = found }
                 self.showPeek(Peek(sessionID: sid, kind: .complete, title: "\(project) 완료", body: self.oneLine(text, limit: 220)))
             }
         }
