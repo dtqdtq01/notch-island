@@ -332,8 +332,9 @@ private func permissionEvent(tool: String, input: [String: Any], suggestions: [A
         store.ingest(["hook_event_name": "SessionStart", "session_id": "h2", "cwd": "/w"], source: "claude", terminal: headless)
         #expect(store.sessions["h2"] == nil)
         // 데스크톱 앱 세션은 터미널이 없어도 숨기지 않는다
-        store.ingest(["hook_event_name": "SessionStart", "session_id": "h3", "cwd": "/w"], source: "claude",
-                     terminal: ["CLAUDE_CODE_ENTRYPOINT": "claude-desktop", "agent_pid": 4243])
+        // (ChatGPT 앱 세션으로 확인 — Claude 앱 세션은 공유 데스크톱 목록을 조회해서 병렬 테스트와 겹친다)
+        store.ingest(["hook_event_name": "SessionStart", "session_id": "h3", "cwd": "/w"], source: "codex",
+                     terminal: ["ancestor_bundles": ["com.openai.codex"], "agent_pid": 4243])
         #expect(store.sessions["h3"] != nil)
     }
 
@@ -583,7 +584,8 @@ extension IntegrationTests {
         #expect(TerminalInfo(["ancestor_bundles": ["com.openai.codex"]]).appName == "ChatGPT")
     }
 
-    @Test func linksClaudeDesktopSessionMetadata() async throws {
+    /// 실제 앱처럼 메인 스레드에서 이벤트를 넣는다 (다른 스레드에서 넣으면 연결 단계와 경쟁)
+    @MainActor @Test func linksClaudeDesktopSessionMetadata() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("desk-\(UUID().uuidString)/acct/org")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let meta: [String: Any] = ["sessionId": "local_abc-123", "cliSessionId": "cli-1", "cwd": "/w/desk", "title": "데스크톱 제목",
@@ -628,7 +630,8 @@ extension IntegrationTests {
 }
 
 extension DesktopAppTests {
-    @Test func linksEvenWhenAppWritesSessionFileLate() async throws {
+    /// 실제 앱처럼 메인 스레드에서 이벤트를 넣는다 (다른 스레드에서 넣으면 연결 단계와 경쟁)
+    @MainActor @Test func linksEvenWhenAppWritesSessionFileLate() async throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("desk-late-\(UUID().uuidString)")
         let folder = base.appendingPathComponent("acct/org")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
