@@ -437,10 +437,11 @@ final class SessionStore: ObservableObject {
     }
 
     /// Claude 데스크톱 앱 세션이면 앱의 세션 ID와 제목을 붙인다 (점프 링크용)
-    private func linkDesktopSession(_ sid: String) {
+    func linkDesktopSession(_ sid: String, completion: ((Session?) -> Void)? = nil) {
         DispatchQueue.main.async {
-            guard self.sessions[sid]?.terminal.desktopApp == .claude else { return }
+            guard self.sessions[sid]?.terminal.desktopApp == .claude else { completion?(self.sessions[sid]); return }
             DesktopSessionIndex.shared.lookup(cliSessionID: sid) { [weak self] entry in
+                defer { completion?(self?.sessions[sid]) }
                 guard let self, let entry, var session = self.sessions[sid] else { return }
                 session.desktopID = entry.desktopID
                 session.desktopTitle = entry.title
@@ -614,7 +615,9 @@ final class SessionStore: ObservableObject {
         if let bundle = session.terminal.ancestorBundles.first(where: prefs.blockedLaunchers.contains) {
             return "차단한 앱에서 실행됨: \(bundle)"
         }
-        if prefs.hideSessionsWithoutTTY, session.terminal.tty == nil, session.terminal.agentPID != nil {
+        // 데스크톱 앱 세션은 원래 터미널이 없으니 이 규칙에서 뺀다
+        if prefs.hideSessionsWithoutTTY, session.terminal.tty == nil, session.terminal.desktopApp == nil,
+           session.terminal.agentPID != nil {
             return "터미널 없는 백그라운드 세션"
         }
         if let directory = prefs.silencedDirectories.first(where: { !$0.isEmpty && session.cwd.contains($0) }) {
@@ -782,8 +785,8 @@ final class SessionStore: ObservableObject {
     // MARK: - 내부
 
     private func touch(_ sid: String, event: [String: Any], source: String, terminal: [String: Any]?) -> Session {
-        let isNew = sessions[sid] == nil
-        defer { if isNew { linkDesktopSession(sid) } }
+        // 앱이 세션 파일을 조금 늦게 쓰기도 해서, 연결될 때까지 이벤트마다 다시 찾는다
+        defer { if sessions[sid]?.desktopID == nil { linkDesktopSession(sid) } }
         var session = sessions[sid] ?? Session(id: sid, source: source)
         if let cwd = event["cwd"] as? String, !cwd.isEmpty { session.cwd = cwd }
         let info = TerminalInfo(terminal)

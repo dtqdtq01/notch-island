@@ -4,6 +4,9 @@ import ApplicationServices
 /// 세션이 돌고 있는 터미널 창/탭/패널로 이동한다.
 /// 정확한 이동이 안 되는 앱은 앱 활성화 + (손쉬운 사용 권한이 있으면) 프로젝트 이름이 들어간 창을 앞으로.
 enum TerminalJumper {
+    /// 데스크톱 세션을 클릭 순간 다시 연결하기 위한 저장소 (앱 시작 때 설정)
+    static weak var desktopLinker: SessionStore?
+
     private static let vscodeFamily: Set<String> = [
         "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.todesktop.230313mzl4w4u92",
         "com.exafunction.windsurf", "com.vscodium", "dev.zed.Zed", "com.trae.app",
@@ -17,7 +20,18 @@ enum TerminalJumper {
         let terminal = session.terminal
         switch terminal.desktopApp {
         case .claude:
-            DispatchQueue.main.async { DesktopSessionIndex.open(desktopID: session.desktopID) }
+            DispatchQueue.main.async {
+                if session.desktopID != nil {
+                    DesktopSessionIndex.open(desktopID: session.desktopID)
+                } else if let store = desktopLinker {
+                    // 아직 연결 전이면 클릭한 순간 한 번 더 찾아보고 연다
+                    store.linkDesktopSession(session.id) { linked in
+                        DesktopSessionIndex.open(desktopID: linked?.desktopID, cliSessionID: session.id)
+                    }
+                } else {
+                    DesktopSessionIndex.open(desktopID: nil, cliSessionID: session.id)
+                }
+            }
             return
         case .chatgpt:
             DispatchQueue.main.async { DesktopSessionIndex.openChatGPT(threadID: session.id) }

@@ -328,8 +328,13 @@ private func permissionEvent(tool: String, input: [String: Any], suggestions: [A
         store.ingest(["hook_event_name": "SessionStart", "session_id": "h1", "cwd": "/w"], source: "claude", terminal: headless)
         #expect(store.sessions["h1"] != nil)
         prefs.hideSessionsWithoutTTY = true
+        defer { prefs.hideSessionsWithoutTTY = false }  // UserDefaults에 남아 다른 테스트에 번지지 않게
         store.ingest(["hook_event_name": "SessionStart", "session_id": "h2", "cwd": "/w"], source: "claude", terminal: headless)
         #expect(store.sessions["h2"] == nil)
+        // 데스크톱 앱 세션은 터미널이 없어도 숨기지 않는다
+        store.ingest(["hook_event_name": "SessionStart", "session_id": "h3", "cwd": "/w"], source: "claude",
+                     terminal: ["CLAUDE_CODE_ENTRYPOINT": "claude-desktop", "agent_pid": 4243])
+        #expect(store.sessions["h3"] != nil)
     }
 
     @Test func deadAgentProcessIsReaped() {
@@ -619,5 +624,39 @@ extension IntegrationTests {
         #expect(LineReader(fd: fds[1]).readLine() == nil)
         #expect(store.sessions["gpt-1"]?.status == .waitingApproval)
         #expect(store.sessions["gpt-1"]?.detail == "ChatGPT에서 승인 대기")
+    }
+}
+
+extension DesktopAppTests {
+    @Test func linksEvenWhenAppWritesSessionFileLate() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("desk-late-\(UUID().uuidString)")
+        let folder = base.appendingPathComponent("acct/org")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        DesktopSessionIndex.rootOverride = base
+        defer { DesktopSessionIndex.rootOverride = nil }
+
+        let store = SessionStore(prefs: Prefs())
+        let desktop: [String: Any] = ["CLAUDE_CODE_ENTRYPOINT": "claude-desktop", "agent_pid": 7]
+        // 1) 세션 시작 — 아직 앱이 세션 파일을 안 썼다
+        store.ingest(["hook_event_name": "SessionStart", "session_id": "late-1"], source: "claude", terminal: desktop)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        #expect(store.sessions["late-1"]?.desktopID == nil)
+
+        // 2) 앱이 파일을 쓴 뒤 다음 이벤트에서 연결된다
+        let meta: [String: Any] = ["sessionId": "local_late-xyz", "cliSessionId": "late-1", "title": "늦게 쓴 세션"]
+        try JSONSerialization.data(withJSONObject: meta).write(to: folder.appendingPathComponent("local_late-xyz.json"))
+        try await Task.sleep(nanoseconds: 1_100_000_000)  // 같은 ID는 1초에 한 번만 다시 훑음
+        store.ingest(["hook_event_name": "UserPromptSubmit", "session_id": "late-1", "prompt": "hi"], source: "claude", terminal: desktop)
+        for _ in 0..<40 where store.sessions["late-1"]?.desktopID == nil { try await Task.sleep(nanoseconds: 50_000_000) }
+        #expect(store.sessions["late-1"]?.desktopID == "local_late-xyz")
+    }
+
+    @Test func desktopLinkFormats() {
+        #expect(DesktopSessionIndex.continueURL(desktopID: "local_ac11a880-1")?.absoluteString
+                == "claude://code/continue?session=local_ac11a880-1&source=notch_island")
+        #expect(DesktopSessionIndex.continueURL(desktopID: "evil?x=1") == nil)
+        #expect(DesktopSessionIndex.resumeURL(cliSessionID: "ddff94e4-1111-2222-3333-444455556666")?.absoluteString
+                == "claude://resume?session=ddff94e4-1111-2222-3333-444455556666")
+        #expect(DesktopSessionIndex.resumeURL(cliSessionID: "not-a-uuid") == nil)
     }
 }

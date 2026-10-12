@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.sounds.play(category)
         }
         focusWatcher = FocusWatcher(store: store)
+        TerminalJumper.desktopLinker = store
         let claudeUsage = ClaudeUsageFetcher(prefs: prefs, store: store)
         self.claudeUsage = claudeUsage
         settings = SettingsWindowController(

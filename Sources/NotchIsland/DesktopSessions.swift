@@ -20,7 +20,9 @@ final class DesktopSessionIndex {
     }
 
     /// 테스트에서 다른 폴더를 쓰기 위한 경로
-    static var rootOverride: URL?
+    static var rootOverride: URL? {
+        didSet { shared.reset() }
+    }
     private static var root: URL {
         rootOverride ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions")
@@ -30,10 +32,19 @@ final class DesktopSessionIndex {
     private var entries: [String: Entry] = [:]  // cliSessionId → Entry
     private var lastScan = Date.distantPast
 
+    func reset() {
+        queue.sync {
+            entries = [:]
+            lastScan = .distantPast
+        }
+    }
+
     /// cliSessionId로 데스크톱 세션 정보를 찾는다. 처음 보는 ID면 폴더를 다시 훑는다.
     func lookup(cliSessionID: String, completion: @escaping (Entry?) -> Void) {
         queue.async {
-            if self.entries[cliSessionID] == nil || Date().timeIntervalSince(self.lastScan) > 30 {
+            let age = Date().timeIntervalSince(self.lastScan)
+            // 없는 ID는 다시 훑되 1초에 한 번까지만, 있는 ID도 30초마다 새로 (제목 변경 반영)
+            if (self.entries[cliSessionID] == nil && age > 1) || age > 30 {
                 self.entries = Self.scan()
                 self.lastScan = Date()
             }
@@ -62,6 +73,19 @@ final class DesktopSessionIndex {
         return result
     }
 
+    static func continueURL(desktopID: String?) -> URL? {
+        guard let desktopID, desktopID.range(of: #"^local_[A-Za-z0-9-]{1,64}$"#, options: .regularExpression) != nil else { return nil }
+        return URL(string: "claude://code/continue?session=\(desktopID)&source=notch_island")
+    }
+
+    /// 앱 코드의 CLI 세션 ID 형식(UUID)과 같을 때만
+    static func resumeURL(cliSessionID: String?) -> URL? {
+        guard let id = cliSessionID,
+              id.range(of: #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"#, options: .regularExpression) != nil
+        else { return nil }
+        return URL(string: "claude://resume?session=\(id)")
+    }
+
     /// ChatGPT 앱에서 Codex 대화 열기 (codex://threads/<thread id>, thread id = 훅의 session_id)
     static func openChatGPT(threadID: String) {
         if threadID.range(of: #"^[A-Za-z0-9_-]{1,80}$"#, options: .regularExpression) != nil,
@@ -72,10 +96,10 @@ final class DesktopSessionIndex {
         }
     }
 
-    /// 데스크톱 앱에서 그 세션 열기. 앱이 링크를 막아 두었으면 앱만 앞으로 가져온다.
-    static func open(desktopID: String?) {
-        if let desktopID, desktopID.range(of: #"^local_[A-Za-z0-9-]{1,64}$"#, options: .regularExpression) != nil,
-           let url = URL(string: "claude://code/continue?session=\(desktopID)&source=notch_island") {
+    /// 데스크톱 앱에서 그 세션 열기:
+    /// 앱 세션 ID(local_…)가 있으면 code/continue, 없으면 CLI 세션 ID로 resume, 둘 다 안 되면 앱만 앞으로.
+    static func open(desktopID: String?, cliSessionID: String? = nil) {
+        if let url = continueURL(desktopID: desktopID) ?? resumeURL(cliSessionID: cliSessionID) {
             NSWorkspace.shared.open(url)
             return
         }
