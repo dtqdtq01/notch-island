@@ -12,5 +12,6 @@ let package = Package(
         .target(name: "NotchShared"),
         .executableTarget(name: "notch-bridge", dependencies: ["NotchShared"]),
         .executableTarget(name: "NotchIsland", dependencies: ["NotchShared"]),
+        .testTarget(name: "NotchIslandTests", dependencies: ["NotchIsland", "NotchShared"]),
     ]
 )

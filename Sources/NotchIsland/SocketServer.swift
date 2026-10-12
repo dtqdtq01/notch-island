@@ -23,6 +23,14 @@ final class Responder {
     func markClosed() {
         lock.lock(); finished = true; lock.unlock()
     }
+
+    /// 응답 없이 연결을 닫음 → bridge가 아무것도 출력하지 않아 에이전트가 터미널에서 묻는다.
+    func cancel() {
+        lock.lock(); defer { lock.unlock() }
+        guard !finished else { return }
+        finished = true
+        shutdown(fd, SHUT_RDWR)
+    }
 }
 
 /// ~/.notch-island/run/notch.sock 에서 bridge 연결을 받는다. 연결마다 스레드 하나.
@@ -93,16 +101,17 @@ final class SocketServer {
         else { close(client); return }
 
         let source = envelope["source"] as? String ?? "claude"
+        let terminal = envelope["terminal"] as? [String: Any]
         guard event["hook_event_name"] as? String == "PermissionRequest" else {
             close(client)
-            DispatchQueue.main.async { self.store.ingest(event, source: source) }
+            DispatchQueue.main.async { self.store.ingest(event, source: source, terminal: terminal) }
             return
         }
 
         let id = UUID()
         let responder = Responder(fd: client)
         DispatchQueue.main.async {
-            self.store.ingestPermission(event, source: source, id: id, responder: responder)
+            self.store.ingestPermission(event, source: source, terminal: terminal, id: id, responder: responder)
         }
         // bridge가 응답을 받고 끝나거나, Claude가 bridge를 죽이면 EOF가 온다.
         while reader.readLine() != nil {}

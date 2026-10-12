@@ -2,9 +2,10 @@ import Foundation
 
 /// 앱과 bridge가 공유하는 경로. 프로토콜은 "JSON 한 줄 + \n".
 public enum NotchPaths {
-    public static var root: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".notch-island")
-    }
+    /// 테스트용 홈 디렉터리 대체
+    public static var homeOverride: URL?
+    public static var home: URL { homeOverride ?? FileManager.default.homeDirectoryForCurrentUser }
+    public static var root: URL { home.appendingPathComponent(".notch-island") }
     public static var runDir: URL { root.appendingPathComponent("run") }
     public static var socket: String { runDir.appendingPathComponent("notch.sock").path }
 }
@@ -98,4 +99,14 @@ public final class LineReader {
             return rest
         }
     }
+}
+
+public extension NotchPaths {
+    static var binDir: URL { root.appendingPathComponent("bin") }
+    static var bridge: String { binDir.appendingPathComponent("notch-bridge").path }
+    static var cacheDir: URL { root.appendingPathComponent("cache") }
+    static var soundsDir: URL { root.appendingPathComponent("sounds") }
+    static var rateLimitsCache: URL { cacheDir.appendingPathComponent("rate-limits.json") }
+    /// 연동 전에 쓰던 statusLine 명령. bridge가 이어서 실행해 준다.
+    static var previousStatusLine: URL { root.appendingPathComponent("statusline-prev") }
 }
