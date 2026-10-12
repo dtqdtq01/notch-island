@@ -96,6 +96,8 @@ enum PixelGlyphs {
 struct AgentIcon: View {
     let source: String
     let status: SessionStatus
+    /// 끝난 세션을 아직 안 봤으면 밝게, 봤으면 흐리게
+    var unread = true
     var cell: CGFloat = 2
 
     private var color: Color {
@@ -110,11 +112,14 @@ struct AgentIcon: View {
 
     private var glows: Bool { status == .running || status == .waitingApproval || status == .waitingInput }
 
+    private var faded: Bool { (status == .done || status == .error) && !unread }
+
     var body: some View {
         HStack(spacing: cell * 2.5) {
             PixelSprite(rows: source == "claude" ? PixelGlyphs.crab : PixelGlyphs.terminal, color: color, cell: cell)
             glyph
         }
+        .opacity(faded ? 0.45 : 1)
         .shadow(color: glows ? color.opacity(0.7) : .clear, radius: 4)
         // 스피너가 돌아도 옆의 글자는 다시 그리지 않도록 아이콘만 따로 GPU에서 그린다
         .padding(4)

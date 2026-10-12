@@ -133,6 +133,8 @@ final class Prefs: ObservableObject {
     @Published var showUsage = Prefs.load("showUsage", true) { didSet { save("showUsage", showUsage) } }
     @Published var disableClickToJump = Prefs.load("disableClickToJump", false) { didSet { save("disableClickToJump", disableClickToJump) } }
 
+    /// 프로젝트 이름 → 사용자가 고른 색(#RRGGBB)
+    @Published var projectColors: [String: String] = Prefs.load("projectColors", [:]) { didSet { save("projectColors", projectColors) } }
     @Published var detailedLayout = Prefs.load("detailedLayout", true) { didSet { save("detailedLayout", detailedLayout) } }
 
     // 자리 비움 리마인더

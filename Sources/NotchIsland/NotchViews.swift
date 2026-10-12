@@ -68,6 +68,8 @@ struct NotchRootView: View {
     let onToggle: () -> Void
     let onSilence: (Session, SilenceAction) -> Void
     let onSettings: () -> Void
+    var onReply: ((Session, String, @escaping (String?) -> Void) -> Void)? = nil
+    var onTyping: ((Bool) -> Void)? = nil
     /// 모양이 움직이는 동안에만 노치 모양으로 자른다 (평소엔 사각형 — 큰 마스크를 매 프레임 그리지 않게)
     @State private var shaping = false
     @State private var shapingEnd: DispatchWorkItem?
@@ -130,7 +132,8 @@ struct NotchRootView: View {
             }
         case .expanded:
             measured {
-                ExpandedView(store: store, model: model, prefs: prefs, onJump: onJump, onSilence: onSilence, onSettings: onSettings)
+                ExpandedView(store: store, model: model, prefs: prefs, onJump: onJump, onSilence: onSilence, onSettings: onSettings,
+                             onReply: onReply, onTyping: onTyping)
             }
             .transition(NotchMotion.contentIn)
         }
@@ -158,7 +161,7 @@ struct CollapsedView: View {
             let side = Metrics.sideWidth(detailed: detailed)
             HStack(spacing: 0) {
                 HStack(spacing: 8) {
-                    AgentIcon(source: top.source, status: top.status, cell: 1.6)
+                    AgentIcon(source: top.source, status: top.status, unread: top.unread, cell: 1.6)
                     if detailed {
                         Text(top.activity)
                             .font(NotchFonts.pixel(13))
@@ -205,6 +208,8 @@ struct ExpandedView: View {
     let onJump: (Session) -> Void
     let onSilence: (Session, SilenceAction) -> Void
     let onSettings: () -> Void
+    var onReply: ((Session, String, @escaping (String?) -> Void) -> Void)? = nil
+    var onTyping: ((Bool) -> Void)? = nil
 
     private static let collapsedLimit = 5
 
@@ -246,7 +251,9 @@ struct ExpandedView: View {
             ForEach(Array(visible.enumerated()), id: \.element.id) { index, session in
                 SessionRowView(
                     session: session, highlighted: model.switcherIndex == index, prefs: prefs,
-                    onJump: { onJump(session) }, onSilence: { onSilence(session, $0) })
+                    onJump: { onJump(session) }, onSilence: { onSilence(session, $0) },
+                    onReply: onReply.map { reply in { text, done in reply(session, text, done) } },
+                    onTyping: onTyping)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -349,16 +356,16 @@ struct SessionHeader: View {
     let session: Session
     var showResponse = false
     var trailing: AnyView? = nil
+    @ObservedObject private var prefs = Prefs.shared
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            AgentIcon(source: session.source, status: session.status, cell: 2.2)
+            AgentIcon(source: session.source, status: session.status, unread: session.unread, cell: 2.2)
                 .frame(width: 44, height: 34, alignment: .center)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(session.title)
+                    ProjectTitle(session: session, colors: prefs.projectColors)
                         .font(NotchStyle.title)
-                        .foregroundStyle(.white)
                         .lineLimit(1)
                     Spacer(minLength: 6)
                     SessionTags(session: session)
@@ -387,6 +394,21 @@ struct SessionHeader: View {
         case .running, .compacting: return session.detail.isEmpty ? nil : session.detail
         case .waitingApproval, .waitingInput, .error: return session.detail.isEmpty ? nil : session.detail
         default: return session.lastResponse?.oneLine ?? (session.detail.isEmpty ? nil : session.detail)
+        }
+    }
+}
+
+/// 프로젝트 이름은 프로젝트 색, 세션 이름은 흰색
+struct ProjectTitle: View {
+    let session: Session
+    let colors: [String: String]
+
+    var body: some View {
+        let project = Text(session.projectName).foregroundColor(Color(hex: ProjectPalette.hex(for: session.projectName, overrides: colors)))
+        if let name = session.name, !name.isEmpty {
+            (project + Text(" · ").foregroundColor(NotchStyle.dim) + Text(name).foregroundColor(.white))
+        } else {
+            project
         }
     }
 }
@@ -428,53 +450,68 @@ struct Chip: View {
     }
 }
 
-/// 목록의 한 줄: 최근·진행 중이면 카드, 오래된 건 한 줄 요약
+/// 목록의 한 줄: 최근·진행 중이면 카드, 오래된 건 한 줄 요약. 마우스를 올리면 답장·닫기 버튼.
 struct SessionRowView: View {
     let session: Session
     let highlighted: Bool
     @ObservedObject var prefs: Prefs
     let onJump: () -> Void
     let onSilence: (SilenceAction) -> Void
+    var onReply: ((String, @escaping (String?) -> Void) -> Void)? = nil
+    var onTyping: ((Bool) -> Void)? = nil
     @State private var hovering = false
+    @State private var replying = false
+    @State private var draft = ""
+    @State private var replyNote: String?
+    @FocusState private var fieldFocused: Bool
 
     private var isRecent: Bool {
         switch session.status {
         case .running, .waitingApproval, .waitingInput, .compacting, .error: return true
-        case .done, .idle: return Date().timeIntervalSince(session.updatedAt) < 15 * 60
+        case .done, .idle: return session.unread || Date().timeIntervalSince(session.updatedAt) < 15 * 60
         }
     }
 
     var body: some View {
-        Group {
-            if isRecent {
-                SessionHeader(session: session, showResponse: true, trailing: hovering ? AnyView(dismissButton) : nil)
-                    .padding(.vertical, 10)
-                    .padding(.horizontal, 6)
+        VStack(alignment: .leading, spacing: 8) {
+            if isRecent || replying {
+                SessionHeader(session: session, showResponse: true, trailing: hovering || replying ? AnyView(actions) : nil)
             } else {
                 HStack(spacing: 10) {
-                    Circle().fill(Color.white.opacity(0.3)).frame(width: 6, height: 6)
+                    Circle().fill(Color(hex: ProjectPalette.hex(for: session.projectName, overrides: prefs.projectColors)).opacity(0.8))
+                        .frame(width: 6, height: 6)
                         .frame(width: 44)
-                    Text(session.title)
+                    ProjectTitle(session: session, colors: prefs.projectColors)
                         .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
+                        .opacity(0.8)
                         .lineLimit(1)
                     Spacer(minLength: 6)
                     SessionTags(session: session)
-                    if hovering { dismissButton }
+                    if hovering { actions }
                 }
-                .padding(.vertical, 9)
-                .padding(.horizontal, 6)
             }
+            if replying { replyField }
         }
+        .padding(.vertical, isRecent || replying ? 10 : 9)
+        .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 14)
-                .fill(Color.white.opacity(highlighted ? 0.13 : hovering ? 0.08 : 0)))
+                .fill(Color.white.opacity(highlighted ? 0.13 : hovering || replying ? 0.08 : 0)))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(highlighted ? Color.white.opacity(0.25) : .clear))
         .contentShape(Rectangle())
         .onHover { inside in withAnimation(.easeOut(duration: 0.12)) { hovering = inside } }
-        .onTapGesture { if !prefs.disableClickToJump { onJump() } }
+        .onTapGesture { if !prefs.disableClickToJump && !replying { onJump() } }
+        .animation(NotchMotion.snappy, value: replying)
         .contextMenu {
             Button("터미널로 이동", action: onJump)
+            if onReply != nil { Button("답장하기") { startReply() } }
+            Menu("프로젝트 색") {
+                ForEach(ProjectPalette.colors, id: \.hex) { color in
+                    Button(color.name) { prefs.projectColors[session.projectName] = color.hex }
+                }
+                Divider()
+                Button("기본 색으로") { prefs.projectColors[session.projectName] = nil }
+            }
             Divider()
             if !session.cwd.isEmpty { Button("이 폴더의 세션 숨기기") { onSilence(.directory) } }
             if let prompt = session.firstPrompt, !prompt.isEmpty {
@@ -484,13 +521,74 @@ struct SessionRowView: View {
         }
     }
 
-    private var dismissButton: some View {
-        Button { onSilence(.dismiss) } label: {
-            Image(systemName: "archivebox").font(.system(size: 12))
+    private var actions: some View {
+        HStack(spacing: 10) {
+            if onReply != nil {
+                Button { replying ? stopReply() : startReply() } label: {
+                    Image(systemName: "arrowshape.turn.up.left.fill").font(.system(size: 12))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(replying ? .white : NotchStyle.dim)
+                .help("이 세션에 답장")
+            }
+            Button { onSilence(.dismiss) } label: {
+                Image(systemName: "archivebox").font(.system(size: 12))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(NotchStyle.dim)
+            .help("카드 닫기")
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(NotchStyle.dim)
-        .help("카드 닫기")
+    }
+
+    private var replyField: some View {
+        HStack(spacing: 8) {
+            TextField("Reply to \(session.projectName)…", text: $draft)
+                .textFieldStyle(.plain)
+                .font(NotchStyle.body)
+                .focused($fieldFocused)
+                .onSubmit(send)
+                .onExitCommand(perform: stopReply)
+            if let replyNote {
+                Text(replyNote).font(.system(size: 11)).foregroundStyle(NotchStyle.orange).lineLimit(1)
+            }
+            Button(action: send) {
+                Image(systemName: "arrow.up.circle.fill").font(.system(size: 18))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(draft.trimmingCharacters(in: .whitespaces).isEmpty ? NotchStyle.faint : .white)
+            .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
+        .padding(.leading, 56)
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    private func startReply() {
+        replying = true
+        replyNote = nil
+        onTyping?(true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { fieldFocused = true }
+    }
+
+    private func stopReply() {
+        replying = false
+        fieldFocused = false
+        onTyping?(false)
+    }
+
+    private func send() {
+        let text = draft
+        guard !text.trimmingCharacters(in: .whitespaces).isEmpty, let onReply else { return }
+        onReply(text) { error in
+            if let error {
+                replyNote = error
+            } else {
+                draft = ""
+                stopReply()
+            }
+        }
     }
 }
 
@@ -556,47 +654,67 @@ struct PermissionBody: View {
     }
 }
 
-/// 파일 이름 + 태그 + 줄 번호가 붙은 코드
+/// 파일 이름 + 태그 + 줄 번호(또는 +/-)가 붙은 코드. highlight.js로 색을 입힌다.
 struct CodeBox: View {
     let request: PendingRequest
-    private static let maxLines = 8
+    private static let maxLines = 10
 
-    private var parts: (name: String, tag: String?, tagColor: Color, lines: [String]) {
+    /// 한 줄: 표식(+/-/없음)과 코드
+    struct Line: Equatable {
+        let mark: Character?
+        let code: String
+    }
+
+    private var info: (name: String, tag: String?, tagColor: Color, language: String?, lines: [Line]) {
         let input = request.input
+        let path = input["file_path"] as? String ?? ""
+        let language = SyntaxHighlighter.language(forPath: path)
+        func split(_ text: String?, _ mark: Character?) -> [Line] {
+            (text ?? "").components(separatedBy: "\n").map { Line(mark: mark, code: $0) }
+        }
         switch request.toolName {
         case "Write":
-            let path = input["file_path"] as? String ?? ""
-            return ((path as NSString).lastPathComponent, "new file", NotchStyle.green,
-                    (input["content"] as? String ?? "").components(separatedBy: "\n"))
-        case "Edit", "MultiEdit":
-            let path = input["file_path"] as? String ?? ""
-            let body = request.preview.components(separatedBy: "\n").dropFirst()
-            return ((path as NSString).lastPathComponent, "edit", Color(red: 0.4, green: 0.65, blue: 1), Array(body))
+            return ((path as NSString).lastPathComponent, "new file", NotchStyle.green, language, split(input["content"] as? String, nil))
+        case "Edit":
+            return ((path as NSString).lastPathComponent, "edit", Color(hex: "#54A0FF"), language,
+                    split(input["old_string"] as? String, "-") + split(input["new_string"] as? String, "+"))
+        case "MultiEdit":
+            let edits = input["edits"] as? [[String: Any]] ?? []
+            let lines = edits.flatMap { split($0["old_string"] as? String, "-") + split($0["new_string"] as? String, "+") }
+            return ((path as NSString).lastPathComponent, "\(edits.count) edits", Color(hex: "#54A0FF"), language, lines)
         case "Bash":
-            return ("command", input["description"] as? String, NotchStyle.dim,
-                    (input["command"] as? String ?? "").components(separatedBy: "\n"))
+            return ("command", input["description"] as? String, NotchStyle.dim, "bash", split(input["command"] as? String, nil))
         default:
-            return (request.toolName, nil, NotchStyle.dim, request.preview.components(separatedBy: "\n"))
+            return (request.toolName, nil, NotchStyle.dim, "json", request.preview.components(separatedBy: "\n").map { Line(mark: nil, code: $0) })
         }
     }
 
+    @State private var colored: [[SyntaxHighlighter.Run]]?
+
     var body: some View {
-        let info = parts
+        let info = info
         let shown = Array(info.lines.prefix(Self.maxLines))
+        let isDiff = shown.contains { $0.mark != nil }
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text(info.name).font(NotchStyle.mono).foregroundStyle(.white.opacity(0.85)).lineLimit(1)
                 if let tag = info.tag { Chip(text: tag, tint: info.tagColor) }
             }
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(shown.enumerated()), id: \.offset) { index, line in
                     HStack(alignment: .top, spacing: 10) {
-                        Text("\(index + 1)").foregroundStyle(NotchStyle.faint).frame(width: 18, alignment: .trailing)
-                        Text(line.isEmpty ? " " : line).foregroundStyle(color(for: line)).lineLimit(1)
+                        Text(line.mark.map(String.init) ?? "\(index + 1)")
+                            .foregroundStyle(line.mark == "+" ? Color(hex: "#7EE787") : line.mark == "-" ? Color(hex: "#FFA198") : NotchStyle.faint)
+                            .frame(width: 18, alignment: .trailing)
+                        codeText(index: index, line: line)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
                     }
+                    .padding(.vertical, 1)
+                    .background(isDiff ? diffBackground(line.mark) : Color.clear)
                 }
                 if info.lines.count > shown.count {
-                    Text("… +\(info.lines.count - shown.count) lines").foregroundStyle(NotchStyle.faint).padding(.leading, 28)
+                    Text("… +\(info.lines.count - shown.count) lines").foregroundStyle(NotchStyle.faint).padding(.leading, 28).padding(.top, 2)
                 }
             }
             .font(NotchStyle.mono)
@@ -605,12 +723,28 @@ struct CodeBox: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12).fill(NotchStyle.cardFill))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
+        .task(id: request.id) {
+            let code = shown.map(\.code).joined(separator: "\n")
+            colored = await SyntaxHighlighter.shared.highlight(code, language: info.language)
+        }
     }
 
-    private func color(for line: String) -> Color {
-        if line.hasPrefix("+ ") { return Color(red: 0.5, green: 0.88, blue: 0.55) }
-        if line.hasPrefix("- ") { return Color(red: 1, green: 0.5, blue: 0.5) }
-        return .white.opacity(0.9)
+    /// 색 조각이 준비되면 칠하고, 아니면 흰 글자
+    private func codeText(index: Int, line: Line) -> Text {
+        guard let colored, index < colored.count, !colored[index].isEmpty else {
+            return Text(line.code.isEmpty ? " " : line.code).foregroundColor(.white.opacity(0.9))
+        }
+        return colored[index].reduce(Text("")) { text, run in
+            text + Text(run.text).foregroundColor(SyntaxHighlighter.color(for: run.scope))
+        }
+    }
+
+    private func diffBackground(_ mark: Character?) -> Color {
+        switch mark {
+        case "+": return Color(hex: "#2EA043").opacity(0.18)
+        case "-": return Color(hex: "#F85149").opacity(0.16)
+        default: return .clear
+        }
     }
 }
 

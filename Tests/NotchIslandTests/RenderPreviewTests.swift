@@ -25,6 +25,7 @@ import Testing
         event(["hook_event_name": "UserPromptSubmit", "session_id": "demo", "prompt": "Create a file called hello.txt with \"Hello from Vibe Island\""])
         event(["hook_event_name": "PreToolUse", "session_id": "demo", "tool_name": "Write", "tool_input": ["file_path": "/w/hello.txt"]])
 
+        store.markSeen("inbox")  // 읽은 완료 세션은 흐리게
         let model = NotchViewModel()
         let g = model.geometry
         func render(_ name: String, mode: NotchMode, width: CGFloat, height: CGFloat) throws {

@@ -119,6 +119,12 @@ struct Session: Identifiable {
     var firstPrompt: String?
     var lastPrompt: String?
     var lastResponse: String?
+    /// Claude Code가 transcript에 남긴 제목 (/rename 한 이름이 우선)
+    var aiTitle: String?
+    var customTitle: String?
+    var transcriptPath: String?
+    /// 끝났는데 아직 사용자가 보지 않음 (터미널을 보거나 점프하면 읽음)
+    var unread = false
     /// 지금 쓰는 도구 (접힌 노치의 "Writing" 같은 글자)
     var currentTool: String?
     var terminal = TerminalInfo(nil)
@@ -128,10 +134,17 @@ struct Session: Identifiable {
         cwd.isEmpty ? String(id.prefix(8)) : (cwd as NSString).lastPathComponent
     }
 
-    /// "project · 첫 프롬프트"
+    /// 세션 이름: /rename 이름 → Claude 자동 제목 → 첫 프롬프트
+    var name: String? {
+        if let customTitle, !customTitle.isEmpty { return customTitle }
+        if let aiTitle, !aiTitle.isEmpty { return aiTitle }
+        return firstPrompt?.split(separator: "\n").first.map(String.init)
+    }
+
+    /// "project · 이름"
     var title: String {
-        guard let prompt = firstPrompt?.split(separator: "\n").first.map(String.init), !prompt.isEmpty else { return projectName }
-        return "\(projectName) · \(prompt)"
+        guard let name, !name.isEmpty else { return projectName }
+        return "\(projectName) · \(name)"
     }
 
     /// 작업 중일 때 노치에 보여줄 동사
@@ -279,7 +292,8 @@ final class SessionStore: ObservableObject {
 
     var sortedSessions: [Session] {
         sessions.values.sorted {
-            if $0.status.urgency != $1.status.urgency { return $0.status.urgency > $1.status.urgency }
+            let a = $0.status.urgency + ($0.unread ? 1 : 0), b = $1.status.urgency + ($1.unread ? 1 : 0)
+            if a != b { return a > b }
             return $0.updatedAt > $1.updatedAt
         }
     }
@@ -311,6 +325,9 @@ final class SessionStore: ObservableObject {
         }
 
         var session = touch(sid, event: event, source: source, terminal: terminal)
+        if let path = event["transcript_path"] as? String, !path.isEmpty, session.transcriptPath != path {
+            session.transcriptPath = path
+        }
         if name == "UserPromptSubmit", session.firstPrompt == nil {
             session.firstPrompt = event["prompt"] as? String
         }
@@ -328,6 +345,7 @@ final class SessionStore: ObservableObject {
             session.lastPrompt = event["prompt"] as? String
             session.lastResponse = nil
             session.currentTool = nil
+            session.unread = false
             session.detail = oneLine(event["prompt"] as? String ?? "")
             if peek?.sessionID == sid { clearPeek() }
             onSound?(.taskAcknowledge)
@@ -359,6 +377,7 @@ final class SessionStore: ObservableObject {
             session.status = .done
             session.subagents = 0
             session.currentTool = nil
+            session.unread = true
             if let message = event["last_assistant_message"] as? String, !message.isEmpty {
                 session.lastResponse = message
             }
@@ -367,6 +386,7 @@ final class SessionStore: ObservableObject {
             showCompletion(sid: sid, event: event)
         case "StopFailure":
             session.status = .error
+            session.unread = true
             let reason = oneLine(event["error"] as? String ?? event["message"] as? String ?? "턴 실패")
             session.detail = reason
             onSound?(.taskError)
@@ -375,7 +395,32 @@ final class SessionStore: ObservableObject {
             break
         }
         sessions[sid] = session
+        if ["SessionStart", "UserPromptSubmit", "Stop"].contains(name) { refreshTitle(sid) }
     }
+
+    // MARK: - 제목 · 읽음
+
+    /// transcript에서 ai-title / custom-title 을 읽어 세션 이름을 갱신 (사용량을 쓰지 않음)
+    func refreshTitle(_ sid: String) {
+        guard let path = sessions[sid]?.transcriptPath else { return }
+        TranscriptTitleReader.shared.read(path: path) { [weak self] titles in
+            guard let self, var session = self.sessions[sid] else { return }
+            guard session.aiTitle != titles.ai || session.customTitle != titles.custom else { return }
+            session.aiTitle = titles.ai ?? session.aiTitle
+            session.customTitle = titles.custom ?? session.customTitle
+            self.sessions[sid] = session
+        }
+    }
+
+    /// 사용자가 그 세션을 봤다 (터미널 포커스·점프·답장)
+    func markSeen(_ sid: String) {
+        guard var session = sessions[sid], session.unread else { return }
+        session.unread = false
+        sessions[sid] = session
+        if peek?.sessionID == sid { clearPeek() }
+    }
+
+    var hasUnread: Bool { sessions.values.contains(where: \.unread) }
 
     func ingestPermission(_ event: [String: Any], source: String, terminal: [String: Any]?, id: UUID, responder: Responder) {
         let sid = event["session_id"] as? String ?? "unknown"

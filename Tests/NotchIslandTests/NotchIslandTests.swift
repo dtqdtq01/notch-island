@@ -472,3 +472,95 @@ extension IntegrationTests {
         #expect(store.peek == nil)
     }
 }
+
+@Suite struct ViewingFeatureTests {
+    @Test func titlesComeFromTranscriptIncrementally() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("t-\(UUID().uuidString).jsonl")
+        let first = """
+        {"type":"user","message":{"content":"hi"}}
+        {"type":"ai-title","aiTitle":"로그인 버그 수정","sessionId":"s"}
+
+        """
+        try Data(first.utf8).write(to: file)
+        let reader = TranscriptTitleReader()
+        #expect(reader.scan(file.path) == .init(ai: "로그인 버그 수정", custom: nil))
+
+        // 이어 쓴 부분만 읽어서 /rename 이름을 반영 (쓰는 중인 마지막 줄은 다음에)
+        let handle = try FileHandle(forWritingTo: file)
+        handle.seekToEndOfFile()
+        handle.write(Data(#"{"type":"custom-title","customTitle":"결제 리팩터링","sessionId":"s"}"#.utf8 + [0x0A]))
+        handle.write(Data(#"{"type":"ai-title","aiTitle":"쓰는 중"#.utf8))
+        try handle.close()
+        #expect(reader.scan(file.path) == .init(ai: "로그인 버그 수정", custom: "결제 리팩터링"))
+    }
+
+    @Test func sessionNamePriority() {
+        var session = Session(id: "x", source: "claude", cwd: "/w/app")
+        #expect(session.title == "app")
+        session.firstPrompt = "첫 질문\n둘째 줄"
+        #expect(session.title == "app · 첫 질문")
+        session.aiTitle = "자동 제목"
+        #expect(session.name == "자동 제목")
+        session.customTitle = "내가 붙인 이름"
+        #expect(session.name == "내가 붙인 이름")
+    }
+
+    @Test func unreadUntilSeen() {
+        let store = SessionStore(prefs: Prefs())
+        store.ingest(["hook_event_name": "UserPromptSubmit", "session_id": "a", "cwd": "/w/a", "prompt": "x"], source: "claude", terminal: nil)
+        store.ingest(["hook_event_name": "Stop", "session_id": "a"], source: "claude", terminal: nil)
+        #expect(store.sessions["a"]?.unread == true)
+        #expect(store.hasUnread)
+        store.markSeen("a")
+        #expect(store.sessions["a"]?.unread == false)
+        store.ingest(["hook_event_name": "Stop", "session_id": "a"], source: "claude", terminal: nil)
+        store.ingest(["hook_event_name": "UserPromptSubmit", "session_id": "a", "prompt": "y"], source: "claude", terminal: nil)
+        #expect(store.sessions["a"]?.unread == false)  // 다시 말을 걸면 읽은 것
+
+        // 안 읽은 완료 세션이 읽은 완료 세션보다 위
+        store.ingest(["hook_event_name": "Stop", "session_id": "a"], source: "claude", terminal: nil)
+        store.markSeen("a")
+        store.ingest(["hook_event_name": "Stop", "session_id": "b", "cwd": "/w/b"], source: "claude", terminal: nil)
+        store.ingest(["hook_event_name": "Stop", "session_id": "a"], source: "claude", terminal: nil)
+        store.markSeen("a")
+        #expect(store.sortedSessions.first?.id == "b")
+    }
+
+    @Test func projectColorsAreStableAndOverridable() {
+        let a = ProjectPalette.defaultHex(for: "notch-island")
+        #expect(a == ProjectPalette.defaultHex(for: "notch-island"))
+        #expect(ProjectPalette.colors.map(\.hex).contains(a))
+        #expect(ProjectPalette.hex(for: "notch-island", overrides: ["notch-island": "#123456"]) == "#123456")
+    }
+
+    @Test func parsesHighlightHTML() throws {
+        let html = #"<span class="hljs-keyword">let</span> s = <span class="hljs-string">&quot;a&amp;b&quot;</span><span class="hljs-comment">/* x\#ny */</span>"#
+        let lines = SyntaxHighlighter.lines(fromHTML: html)
+        try #require(lines.count == 2)
+        #expect(lines[0].first == .init(text: "let", scope: "keyword"))
+        #expect(lines[0].contains(.init(text: "\"a&b\"", scope: "string")))
+        #expect(lines[1] == [.init(text: "y */", scope: "comment")])
+    }
+
+    @Test func highlightsWithBundledScript() async throws {
+        SyntaxHighlighter.scriptOverride = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../Resources/Highlight/highlight.min.js").standardized
+        let lines = try #require(await SyntaxHighlighter.shared.highlight("let x = 1 // hi", language: "swift"))
+        #expect(lines.first?.contains(where: { $0.scope == "keyword" && $0.text == "let" }) == true)
+        #expect(lines.first?.contains(where: { $0.scope == "comment" }) == true)
+        #expect(await SyntaxHighlighter.shared.highlight("x", language: nil) == nil)
+        #expect(SyntaxHighlighter.language(forPath: "/a/b/View.tsx") == "typescript")
+    }
+
+    @Test func focusMatchingRules() {
+        var a = Session(id: "aaaaaaaa-1111", source: "claude", cwd: "/w/notch-island")
+        a.terminal = TerminalInfo(["tty": "/dev/ttys003"])
+        var b = Session(id: "bbbbbbbb-2222", source: "claude", cwd: "/w/api")
+        b.terminal = TerminalInfo(["tty": "/dev/ttys004"])
+        #expect(FocusWatcher.matches([a, b], tty: "/dev/ttys004", title: nil).map(\.id) == [b.id])
+        #expect(FocusWatcher.matches([a, b], tty: nil, title: "api ‹aaaaaaaa›").map(\.id) == [a.id])  // 표식이 이름보다 우선
+        #expect(FocusWatcher.matches([a, b], tty: nil, title: "~/w/notch-island — zsh").map(\.id) == [a.id])
+        var c = a; c = Session(id: "cccccccc-3333", source: "claude", cwd: "/x/notch-island")
+        #expect(FocusWatcher.matches([a, c], tty: nil, title: "notch-island").isEmpty)  // 이름이 겹치면 판단 안 함
+    }
+}

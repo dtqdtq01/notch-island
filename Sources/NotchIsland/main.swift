@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var quiet = QuietMonitor(prefs: prefs)
     private var hookWatcher: HookWatcher?
     private var idleWatcher: IdleWatcher?
+    private var focusWatcher: FocusWatcher?
     private var claudeUsage: ClaudeUsageFetcher?
     private var server: SocketServer?
     private var notch: NotchPanelController?
@@ -44,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, !self.quiet.isQuiet else { return }
             self.sounds.play(category)
         }
+        focusWatcher = FocusWatcher(store: store)
         let claudeUsage = ClaudeUsageFetcher(prefs: prefs, store: store)
         self.claudeUsage = claudeUsage
         settings = SettingsWindowController(

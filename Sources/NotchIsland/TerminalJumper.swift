@@ -69,6 +69,153 @@ enum TerminalJumper {
         }
     }
 
+    // MARK: - 답장 보내기
+
+    enum SendResult { case sent, pasted, failed(String) }
+
+    /// 세션의 터미널에 글을 입력하고 Enter. 정확히 보낼 수 없는 앱은 창으로 이동해 붙여넣는다.
+    static func send(_ rawText: String, to session: Session, completion: @escaping (SendResult) -> Void) {
+        // 여러 줄은 중간에 제출되지 않도록 한 줄로
+        let text = rawText.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = deliver(text, to: session)
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    private static func deliver(_ text: String, to session: Session) -> SendResult {
+        let terminal = session.terminal
+        if let pane = terminal.tmuxPane, let tmux = firstExisting(["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]) {
+            if run(tmux, ["send-keys", "-t", pane, "-l", text]) != nil, run(tmux, ["send-keys", "-t", pane, "Enter"]) != nil {
+                return .sent
+            }
+        }
+        switch terminal.hostBundleID {
+        case "com.googlecode.iterm2":
+            if let tty = terminal.tty.flatMap(safeTTY), osascript(itermWriteScript(tty, text)) == "ok" { return .sent }
+        case "com.apple.Terminal":
+            if let tty = terminal.tty.flatMap(safeTTY), osascript(appleTerminalWriteScript(tty, text)) == "ok" { return .sent }
+        case "net.kovidgoyal.kitty":
+            if let window = terminal.kittyWindow, let listen = terminal.kittyListen,
+               let kitty = firstExisting(["/Applications/kitty.app/Contents/MacOS/kitty", "/opt/homebrew/bin/kitty"]),
+               run(kitty, ["@", "--to", listen, "send-text", "--match", "id:\(window)", text + "\r"]) != nil {
+                return .sent
+            }
+        case "com.github.wez.wezterm":
+            if let pane = terminal.weztermPane,
+               let wezterm = firstExisting(["/Applications/WezTerm.app/Contents/MacOS/wezterm", "/opt/homebrew/bin/wezterm"]),
+               run(wezterm, ["cli", "send-text", "--pane-id", pane, "--no-paste", text]) != nil,
+               run(wezterm, ["cli", "send-text", "--pane-id", pane, "--no-paste", "\r"]) != nil {
+                return .sent
+            }
+        default:
+            break
+        }
+        return pasteIntoFocusedWindow(text, session: session)
+    }
+
+    /// 창으로 이동 → 클립보드에 넣고 ⌘V → Enter → 클립보드 되돌리기
+    private static func pasteIntoFocusedWindow(_ text: String, session: Session) -> SendResult {
+        guard AXIsProcessTrusted() else { return .failed("이 터미널은 손쉬운 사용 권한이 있어야 답장할 수 있어요") }
+        perform(session)
+        Thread.sleep(forTimeInterval: 0.4)
+        let semaphore = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            let pasteboard = NSPasteboard.general
+            let saved = pasteboard.string(forType: .string)
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            postKey(9, flags: .maskCommand)  // V
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                postKey(36, flags: [])  // Return
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    if let saved {
+                        pasteboard.clearContents()
+                        pasteboard.setString(saved, forType: .string)
+                    }
+                    semaphore.signal()
+                }
+            }
+        }
+        semaphore.wait()
+        return .pasted
+    }
+
+    private static func postKey(_ code: CGKeyCode, flags: CGEventFlags) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] {
+            let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
+            event?.flags = flags
+            event?.post(tap: .cghidEventTap)
+        }
+    }
+
+    private static func appleScriptString(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    static func itermWriteScript(_ tty: String, _ text: String) -> String {
+        """
+        tell application id "com.googlecode.iterm2"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    repeat with s in sessions of t
+                        if tty of s is "\(tty)" then
+                            tell s to write text "\(appleScriptString(text))"
+                            return "ok"
+                        end if
+                    end repeat
+                end repeat
+            end repeat
+        end tell
+        return "miss"
+        """
+    }
+
+    static func appleTerminalWriteScript(_ tty: String, _ text: String) -> String {
+        """
+        tell application id "com.apple.Terminal"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    if tty of t is "\(tty)" then
+                        do script "\(appleScriptString(text))" in t
+                        return "ok"
+                    end if
+                end repeat
+            end repeat
+        end tell
+        return "miss"
+        """
+    }
+
+    // MARK: - 지금 보고 있는 세션
+
+    /// 맨 앞 터미널에서 지금 선택된 tty (iTerm2·Terminal만 정확히 알 수 있음)
+    static func focusedTTY(bundleID: String) -> String? {
+        switch bundleID {
+        case "com.googlecode.iterm2":
+            return osascript(#"tell application id "com.googlecode.iterm2" to tty of current session of current window"#)
+        case "com.apple.Terminal":
+            return osascript(#"tell application id "com.apple.Terminal" to tty of selected tab of front window"#)
+        default:
+            return nil
+        }
+    }
+
+    /// 맨 앞 창의 제목 (손쉬운 사용 권한 필요)
+    static func focusedWindowTitle(pid: pid_t) -> String? {
+        guard AXIsProcessTrusted() else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        var window: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &window) == .success,
+              let window else { return nil }
+        var title: CFTypeRef?
+        AXUIElementCopyAttributeValue(window as! AXUIElement, kAXTitleAttribute as CFString, &title)
+        return title as? String
+    }
+
     // MARK: - AppleScript
 
     private static func itermScript(_ tty: String) -> String {

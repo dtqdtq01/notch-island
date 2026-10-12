@@ -114,6 +114,7 @@ final class NotchPanelController {
     private var clickMonitor: Any?
     private var frontIsFullscreen = false
     private var appBeforeSwitcher: NSRunningApplication?
+    private var appBeforeTyping: NSRunningApplication?
 
     init(store: SessionStore, prefs: Prefs, quiet: QuietMonitor, openSettings: @escaping () -> Void) {
         self.store = store
@@ -130,7 +131,19 @@ final class NotchPanelController {
                 case .dismiss: store?.dismiss(session.id)
                 }
             },
-            onSettings: openSettings)
+            onSettings: openSettings,
+            onReply: { [weak store] session, text, done in
+                TerminalJumper.send(text, to: session) { result in
+                    switch result {
+                    case .sent, .pasted:
+                        store?.markSeen(session.id)
+                        done(nil)
+                    case .failed(let reason):
+                        done(reason)
+                    }
+                }
+            },
+            onTyping: { [weak self] typing in self?.setTyping(typing) })
         let host = FirstMouseHostingView(rootView: root)
         // 창 크기는 직접 관리한다 — SwiftUI가 매 업데이트마다 창 최소/최대 크기를 계산하지 않게
         host.sizingOptions = []
@@ -177,7 +190,21 @@ final class NotchPanelController {
     func jump(_ session: Session) {
         closeSwitcher()
         model.pinned = false
+        store.markSeen(session.id)
         TerminalJumper.jump(session)
+    }
+
+    /// 답장 입력 중에는 키보드를 받고 노치를 펼친 채로 둔다. 끝나면 원래 앱에 포커스를 돌려준다.
+    func setTyping(_ typing: Bool) {
+        if typing {
+            if appBeforeTyping == nil { appBeforeTyping = NSWorkspace.shared.frontmostApplication }
+            model.pinned = true
+            panel.makeKey()
+        } else {
+            model.pinned = false
+            appBeforeTyping?.activate()
+            appBeforeTyping = nil
+        }
     }
 
     func togglePinned() {

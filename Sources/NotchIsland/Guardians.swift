@@ -148,3 +148,91 @@ final class IdleWatcher {
         onSound(.idleReminder)
     }
 }
+
+/// 사용자가 어떤 세션의 터미널을 보고 있는지 알아내 그 세션을 읽음 처리한다.
+/// 앱 전환과 (손쉬운 사용 권한이 있으면) 창 포커스·제목 변화를 듣고, 읽지 않은 세션이 있을 때만 확인한다.
+final class FocusWatcher {
+    private let store: SessionStore
+    private var observer: AXObserver?
+    private var observedPID: pid_t = 0
+    private var pending: DispatchWorkItem?
+    private let queue = DispatchQueue(label: "notch.focus", qos: .utility)
+
+    init(store: SessionStore) {
+        self.store = store
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            self?.observe(app)
+            self?.schedule()
+        }
+        observe(NSWorkspace.shared.frontmostApplication)
+    }
+
+    /// 창 포커스·제목이 바뀌면 다시 확인 (탭 전환도 제목이 바뀌어서 잡힌다)
+    private func observe(_ app: NSRunningApplication?) {
+        guard let app, AXIsProcessTrusted(), app.processIdentifier != observedPID else { return }
+        if let observer {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        }
+        observer = nil
+        observedPID = app.processIdentifier
+        var created: AXObserver?
+        let callback: AXObserverCallback = { _, _, _, refcon in
+            guard let refcon else { return }
+            Unmanaged<FocusWatcher>.fromOpaque(refcon).takeUnretainedValue().schedule()
+        }
+        guard AXObserverCreate(app.processIdentifier, callback, &created) == .success, let created else { return }
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        for name in [kAXFocusedWindowChangedNotification, kAXTitleChangedNotification, kAXMainWindowChangedNotification] {
+            AXObserverAddNotification(created, element, name as CFString, refcon)
+        }
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .defaultMode)
+        observer = created
+    }
+
+    private var lastCheck = Date.distantPast
+
+    /// 작업 중인 에이전트는 창 제목을 계속 바꾸므로, 확인은 최대 1.5초에 한 번만
+    func schedule() {
+        guard store.hasUnread, pending == nil else { return }
+        let wait = max(0.35, 1.5 - Date().timeIntervalSince(lastCheck))
+        let work = DispatchWorkItem { [weak self] in
+            self?.pending = nil
+            self?.lastCheck = Date()
+            self?.check()
+        }
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: work)
+    }
+
+    private func check() {
+        guard let app = NSWorkspace.shared.frontmostApplication, let bundle = app.bundleIdentifier else { return }
+        let candidates = store.sessions.values.filter { $0.unread && $0.terminal.hostBundleID == bundle }
+        guard !candidates.isEmpty else { return }
+        let pid = app.processIdentifier
+        queue.async { [weak self] in
+            let tty = TerminalJumper.focusedTTY(bundleID: bundle)
+            let title = TerminalJumper.focusedWindowTitle(pid: pid)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                for session in Self.matches(candidates, tty: tty, title: title) { self.store.markSeen(session.id) }
+            }
+        }
+    }
+
+    /// 보고 있는 창과 맞는 세션 고르기: tty → 제목 속 세션 표식 → 제목 속 프로젝트 이름(한 개일 때만)
+    static func matches(_ candidates: [Session], tty: String?, title: String?) -> [Session] {
+        if let tty, !tty.isEmpty {
+            let byTTY = candidates.filter { $0.terminal.tty == tty && $0.terminal.tmuxPane == nil }
+            if !byTTY.isEmpty { return byTTY }
+        }
+        guard let title, !title.isEmpty else { return [] }
+        let byMarker = candidates.filter { title.contains(TerminalJumper.marker(for: $0.id)) }
+        if !byMarker.isEmpty { return byMarker }
+        let byName = candidates.filter { title.localizedCaseInsensitiveContains($0.projectName) }
+        return byName.count == 1 ? byName : []
+    }
+}
