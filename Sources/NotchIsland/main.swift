@@ -16,6 +16,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if AppLocation.offerMoveIfNeeded() {
+            NSApp.terminate(nil)
+            return
+        }
         Integrations.installBridge()
         NotchFonts.register()
         Prefs.syncTitleMarkerFlag(prefs.titleMarkerEnabled)
@@ -140,6 +144,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings?.show()
     }
 }
+
+AppLocation.migrateLegacyDefaults()
 
 // 명령줄: NotchIsland --install claude|codex|statusline  /  --uninstall …
 // (화면 없이 연동만 설치하고 끝낸다. 실행 중인 앱은 그대로 둔다)

@@ -3,7 +3,19 @@
 Claude Code·Codex 세션을 맥 노치에 띄우고, 권한 요청·질문·계획 승인을 노치에서 처리하고,
 클릭 한 번에 해당 터미널로 돌아가는 앱. (Vibe Island의 기능을 처음부터 다시 구현한 무료 대안)
 
-## 설치
+## 설치 (배포판)
+`dist/NotchIsland-<버전>.dmg`를 열어 앱을 Applications로 끌어다 놓는다.
+Apple 유료 서명·공증이 없는 무료 배포판이라 처음 한 번은 **시스템 설정 → 개인정보 보호 및 보안 → 그래도 열기**
+(또는 `xattr -dr com.apple.quarantine "/Applications/Notch Island.app"`)가 필요하다. DMG 안 안내 파일 참고.
+
+## 배포판 만들기
+```sh
+./scripts/release.sh [버전]   # Intel+Apple Silicon 공용 → dist/ 에 DMG·ZIP·SHA256SUMS
+```
+Developer ID가 생기면 `NOTCH_SIGN_IDENTITY="Developer ID Application: …"`(+ `NOTCH_NOTARY_PROFILE`)로
+같은 스크립트가 Hardened Runtime 서명·공증·스테이플까지 한다. 아이콘은 `swift scripts/make-icon.swift <iconset>`.
+
+## 개발용 설치
 ```sh
 ./scripts/install.sh      # 빌드 → ~/Applications/Notch Island.app → 실행
 ```

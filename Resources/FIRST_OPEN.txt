@@ -1,0 +1,26 @@
+Notch Island 설치하기
+====================
+
+1. Notch Island.app 을 옆의 Applications(응용 프로그램) 폴더로 끌어다 놓으세요.
+
+2. 처음 열 때 macOS가 "확인되지 않은 개발자" 경고를 보여줄 수 있어요.
+   (Apple 유료 개발자 서명·공증을 받지 않은 무료 배포판이라서 그래요)
+
+   방법 A — 시스템 설정에서 허용
+     1) Notch Island를 한 번 열어 봅니다 (경고가 뜨면 닫기)
+     2) 시스템 설정 → 개인정보 보호 및 보안 → 아래쪽 "Notch Island" 옆
+        [그래도 열기] → 암호 입력
+     3) 다시 열면 실행돼요
+
+   방법 B — 터미널에서 한 줄
+     xattr -dr com.apple.quarantine "/Applications/Notch Island.app"
+
+3. 처음 실행하면 설정의 [연동] 탭이 열려요.
+   - Claude Code / Codex CLI → [설치]
+   - Claude 상태줄 → [설치] (사용 한도·모델 표시)
+   - 처음 점프할 때 "자동화" 권한, Ghostty 등은 "손쉬운 사용" 권한을 물어봐요.
+
+4. ChatGPT 앱(Codex)은 Codex 연동 설치 후, ChatGPT 앱 → 설정 → Hooks 에서
+   notch-bridge 훅을 신뢰(Trust)해야 동작해요. (프로젝트 폴더를 하나 열어야 목록이 보여요)
+
+제거: 설정 → 연동에서 각 연동을 [제거]한 뒤 앱을 휴지통으로 옮기세요.

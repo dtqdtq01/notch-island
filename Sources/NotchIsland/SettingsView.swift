@@ -598,7 +598,7 @@ struct IntegrationSettings: View {
 struct AboutView: View {
     var body: some View {
         VStack(spacing: 10) {
-            Image(systemName: "capsule.fill").font(.system(size: 44))
+            Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 72, height: 72)
             Text("Notch Island").font(.title2.bold())
             Text("버전 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")")
                 .foregroundStyle(.secondary)
@@ -612,6 +612,10 @@ struct AboutView: View {
             }
             .font(.caption.monospaced())
             .foregroundStyle(.secondary)
+            if let notices = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "txt") {
+                Button("오픈소스 고지") { NSWorkspace.shared.open(notices) }
+                    .buttonStyle(.link)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
