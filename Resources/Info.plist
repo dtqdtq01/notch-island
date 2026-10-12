@@ -2,20 +2,35 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key><string>NotchIsland</string>
-    <key>CFBundleIdentifier</key><string>com.notchisland.app</string>
-    <key>CFBundleName</key><string>Notch Island</string>
-    <key>CFBundleDisplayName</key><string>Notch Island</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleIconFile</key><string>AppIcon</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
-    <key>CFBundleVersion</key><string>1</string>
-    <key>CFBundleDevelopmentRegion</key><string>ko</string>
-    <key>LSMinimumSystemVersion</key><string>14.0</string>
-    <key>LSUIElement</key><true/>
-    <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>NSHumanReadableCopyright</key><string>Notch Island · Departure Mono (OFL-1.1), highlight.js (BSD-3-Clause)</string>
-    <key>NSAppleEventsUsageDescription</key><string>세션을 클릭했을 때 iTerm2·Terminal의 해당 창과 탭으로 이동하고, 노치에서 쓴 답장을 그 터미널에 보내기 위해 필요합니다.</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>ko</string>
+	<key>CFBundleDisplayName</key>
+	<string>Notch Island</string>
+	<key>CFBundleExecutable</key>
+	<string>NotchIsland</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.notchisland.app</string>
+	<key>CFBundleName</key>
+	<string>Notch Island</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>세션을 클릭했을 때 iTerm2·Terminal의 해당 창과 탭으로 이동하고, 노치에서 쓴 답장을 그 터미널에 보내기 위해 필요합니다.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Notch Island · Departure Mono (OFL-1.1), highlight.js (BSD-3-Clause)</string>
 </dict>
 </plist>
