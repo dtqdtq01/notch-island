@@ -564,3 +564,60 @@ extension IntegrationTests {
         #expect(FocusWatcher.matches([a, c], tty: nil, title: "notch-island").isEmpty)  // 이름이 겹치면 판단 안 함
     }
 }
+
+@Suite(.serialized) struct DesktopAppTests {
+    @Test func detectsDesktopApps() {
+        #expect(TerminalInfo(["CLAUDE_CODE_ENTRYPOINT": "claude-desktop"]).desktopApp == .claude)
+        #expect(TerminalInfo(["ancestor_bundles": ["com.anthropic.claudefordesktop"], "agent_pid": 5]).desktopApp == .claude)
+        #expect(TerminalInfo(["ancestor_bundles": ["com.openai.codex"], "agent_pid": 5]).desktopApp == .chatgpt)
+        #expect(TerminalInfo(["__CFBundleIdentifier": "com.openai.codex"]).desktopApp == .chatgpt)
+        // 터미널에서 직접 돌린 claude는 데스크톱 세션이 아니다
+        #expect(TerminalInfo(["tty": "/dev/ttys001", "ancestor_bundles": ["com.googlecode.iterm2"]]).desktopApp == nil)
+        #expect(TerminalInfo(["tty": "/dev/ttys001", "ancestor_bundles": ["com.openai.codex"]]).desktopApp == nil)
+        #expect(TerminalInfo(["CLAUDE_CODE_ENTRYPOINT": "claude-desktop"]).appName == "Claude App")
+        #expect(TerminalInfo(["ancestor_bundles": ["com.openai.codex"]]).appName == "ChatGPT")
+    }
+
+    @Test func linksClaudeDesktopSessionMetadata() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("desk-\(UUID().uuidString)/acct/org")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let meta: [String: Any] = ["sessionId": "local_abc-123", "cliSessionId": "cli-1", "cwd": "/w/desk", "title": "데스크톱 제목",
+                                   "model": "claude-opus", "permissionMode": "auto", "isArchived": false]
+        try JSONSerialization.data(withJSONObject: meta).write(to: root.appendingPathComponent("local_abc-123.json"))
+        DesktopSessionIndex.rootOverride = root.deletingLastPathComponent().deletingLastPathComponent()
+        defer { DesktopSessionIndex.rootOverride = nil }
+
+        let index = DesktopSessionIndex.scan()
+        #expect(index["cli-1"]?.desktopID == "local_abc-123")
+        #expect(index["cli-1"]?.title == "데스크톱 제목")
+
+        let store = SessionStore(prefs: Prefs())
+        store.ingest(["hook_event_name": "SessionStart", "session_id": "cli-1"], source: "claude",
+                     terminal: ["CLAUDE_CODE_ENTRYPOINT": "claude-desktop", "agent_pid": 7])
+        // 데스크톱 목록 조회는 비동기 → 반영될 때까지 잠깐 기다림
+        for _ in 0..<40 where store.sessions["cli-1"]?.desktopID == nil {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        #expect(store.sessions["cli-1"]?.desktopID == "local_abc-123")
+        #expect(store.sessions["cli-1"]?.title == "desk · 데스크톱 제목")
+    }
+
+    @Test func desktopApprovalsCanStayInApp() throws {
+        let prefs = Prefs()
+        prefs.desktopApprovalsInApp = true
+        defer { prefs.desktopApprovalsInApp = false }
+        let store = SessionStore(prefs: prefs)
+        var fds: [Int32] = [0, 0]
+        socketpair(AF_UNIX, SOCK_STREAM, 0, &fds)
+        var tv = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fds[1], SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        defer { close(fds[0]); close(fds[1]) }
+        store.ingestPermission(["hook_event_name": "PermissionRequest", "session_id": "gpt-1", "tool_name": "Bash", "tool_input": ["command": "ls"]],
+                               source: "codex", terminal: ["ancestor_bundles": ["com.openai.codex"], "agent_pid": 9],
+                               id: UUID(), responder: Responder(fd: fds[0]))
+        #expect(store.pending.isEmpty)  // 노치 카드 없이 앱으로 넘김
+        #expect(LineReader(fd: fds[1]).readLine() == nil)
+        #expect(store.sessions["gpt-1"]?.status == .waitingApproval)
+        #expect(store.sessions["gpt-1"]?.detail == "ChatGPT에서 승인 대기")
+    }
+}

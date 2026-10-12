@@ -53,6 +53,8 @@ struct TerminalInfo {
     var warpFocusURL: String?
     var agentPID: Int32?
     var ancestorBundles: [String] = []
+    /// Claude Code가 알려주는 실행 출처 (cli, claude-desktop 등)
+    var entrypoint: String?
 
     init(_ info: [String: Any]?) {
         let info = info ?? [:]
@@ -66,14 +68,32 @@ struct TerminalInfo {
         warpFocusURL = info["WARP_FOCUS_URL"] as? String
         agentPID = (info["agent_pid"] as? NSNumber).map { Int32(truncating: $0) }
         ancestorBundles = info["ancestor_bundles"] as? [String] ?? []
+        entrypoint = info["CLAUDE_CODE_ENTRYPOINT"] as? String
+    }
+
+    enum DesktopApp: Equatable { case claude, chatgpt }
+
+    /// 터미널이 아니라 데스크톱 앱 안에서 돌아가는 세션인지
+    var desktopApp: DesktopApp? {
+        if entrypoint == "claude-desktop" { return .claude }
+        guard tty == nil else { return nil }  // 터미널이 붙어 있으면 터미널 세션
+        let ids = [bundleID].compactMap { $0 } + ancestorBundles
+        if ids.contains(DesktopSessionIndex.claudeBundleID) { return .claude }
+        if ids.contains(DesktopSessionIndex.chatGPTBundleID) { return .chatgpt }
+        return nil
     }
 
     var isEmpty: Bool {
-        tty == nil && bundleID == nil && termProgram == nil && agentPID == nil && ancestorBundles.isEmpty
+        tty == nil && bundleID == nil && termProgram == nil && agentPID == nil && ancestorBundles.isEmpty && entrypoint == nil
     }
 
-    /// 태그에 보여줄 터미널/편집기 이름
+    /// 태그에 보여줄 터미널/편집기/앱 이름
     var appName: String? {
+        switch desktopApp {
+        case .claude: return "Claude App"
+        case .chatgpt: return "ChatGPT"
+        case nil: break
+        }
         switch hostBundleID {
         case "com.googlecode.iterm2": return "iTerm"
         case "com.apple.Terminal": return "Terminal"
@@ -125,6 +145,9 @@ struct Session: Identifiable {
     var transcriptPath: String?
     /// 끝났는데 아직 사용자가 보지 않음 (터미널을 보거나 점프하면 읽음)
     var unread = false
+    /// Claude 데스크톱 앱 세션의 ID(local_…)와 앱에 표시된 제목
+    var desktopID: String?
+    var desktopTitle: String?
     /// 지금 쓰는 도구 (접힌 노치의 "Writing" 같은 글자)
     var currentTool: String?
     var terminal = TerminalInfo(nil)
@@ -138,6 +161,7 @@ struct Session: Identifiable {
     var name: String? {
         if let customTitle, !customTitle.isEmpty { return customTitle }
         if let aiTitle, !aiTitle.isEmpty { return aiTitle }
+        if let desktopTitle, !desktopTitle.isEmpty { return desktopTitle }
         return firstPrompt?.split(separator: "\n").first.map(String.init)
     }
 
@@ -412,6 +436,21 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Claude 데스크톱 앱 세션이면 앱의 세션 ID와 제목을 붙인다 (점프 링크용)
+    private func linkDesktopSession(_ sid: String) {
+        DispatchQueue.main.async {
+            guard self.sessions[sid]?.terminal.desktopApp == .claude else { return }
+            DesktopSessionIndex.shared.lookup(cliSessionID: sid) { [weak self] entry in
+                guard let self, let entry, var session = self.sessions[sid] else { return }
+                session.desktopID = entry.desktopID
+                session.desktopTitle = entry.title
+                if session.cwd.isEmpty, let cwd = entry.cwd { session.cwd = cwd }
+                if session.model == nil { session.model = entry.model }
+                self.sessions[sid] = session
+            }
+        }
+    }
+
     /// 사용자가 그 세션을 봤다 (터미널 포커스·점프·답장)
     func markSeen(_ sid: String) {
         guard var session = sessions[sid], session.unread else { return }
@@ -433,6 +472,16 @@ final class SessionStore: ObservableObject {
         }
         let toolName = event["tool_name"] as? String ?? "Tool"
         let input = event["tool_input"] as? [String: Any] ?? [:]
+
+        // 데스크톱 앱 세션의 승인을 앱 화면에 맡기기로 했으면 바로 넘긴다
+        if session.terminal.desktopApp != nil && prefs.desktopApprovalsInApp {
+            responder.cancel()
+            session.status = .waitingApproval
+            session.detail = "\(session.terminal.appName ?? "앱")에서 승인 대기"
+            sessions[sid] = session
+            onSound?(.inputRequired)
+            return
+        }
 
         let kind: RequestKind
         switch toolName {
@@ -733,6 +782,8 @@ final class SessionStore: ObservableObject {
     // MARK: - 내부
 
     private func touch(_ sid: String, event: [String: Any], source: String, terminal: [String: Any]?) -> Session {
+        let isNew = sessions[sid] == nil
+        defer { if isNew { linkDesktopSession(sid) } }
         var session = sessions[sid] ?? Session(id: sid, source: source)
         if let cwd = event["cwd"] as? String, !cwd.isEmpty { session.cwd = cwd }
         let info = TerminalInfo(terminal)

@@ -252,7 +252,7 @@ struct ExpandedView: View {
                 SessionRowView(
                     session: session, highlighted: model.switcherIndex == index, prefs: prefs,
                     onJump: { onJump(session) }, onSilence: { onSilence(session, $0) },
-                    onReply: onReply.map { reply in { text, done in reply(session, text, done) } },
+                    onReply: session.terminal.desktopApp == nil ? onReply.map { reply in { text, done in reply(session, text, done) } } : nil,
                     onTyping: onTyping)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }

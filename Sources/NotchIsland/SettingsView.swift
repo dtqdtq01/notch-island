@@ -544,6 +544,13 @@ struct IntegrationSettings: View {
                 }
                 Text("기존 statusLine 명령은 보존해서 이어서 실행해요.").font(.caption).foregroundStyle(.secondary)
             }
+            Section("데스크톱 앱") {
+                Text("Claude 앱의 Code 탭 세션과 ChatGPT 앱의 Codex 작업도 노치에 떠요. Claude 앱은 위의 Claude Code 연동, ChatGPT 앱은 Codex 연동을 쓰고, 세션을 누르면 그 앱의 해당 대화가 열려요.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("데스크톱 앱 세션의 승인은 노치 대신 앱 화면에서 처리", isOn: $prefs.desktopApprovalsInApp)
+                Text("ChatGPT 앱이 훅을 막으면 앱 설정 → Hooks(또는 Codex CLI에서 /hooks)에서 Notch Island 훅을 신뢰해 주세요.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("연동 유지·정밀 점프") {
                 Toggle("다른 도구가 훅을 지우면 자동으로 복구", isOn: $prefs.autoRepairHooks)
                 Toggle("창 제목에 세션 표식 넣기 (Ghostty·Warp·Alacritty 등 정밀 점프)", isOn: $prefs.titleMarkerEnabled)

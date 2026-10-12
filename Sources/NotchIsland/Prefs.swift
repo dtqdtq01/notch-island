@@ -135,6 +135,8 @@ final class Prefs: ObservableObject {
 
     /// 프로젝트 이름 → 사용자가 고른 색(#RRGGBB)
     @Published var projectColors: [String: String] = Prefs.load("projectColors", [:]) { didSet { save("projectColors", projectColors) } }
+    /// 데스크톱 앱(Claude·ChatGPT) 세션의 권한 요청은 노치 대신 앱 화면에서 처리
+    @Published var desktopApprovalsInApp = Prefs.load("desktopApprovalsInApp", false) { didSet { save("desktopApprovalsInApp", desktopApprovalsInApp) } }
     @Published var detailedLayout = Prefs.load("detailedLayout", true) { didSet { save("detailedLayout", detailedLayout) } }
 
     // 자리 비움 리마인더

@@ -22,7 +22,7 @@ enum TerminalProbe {
     static let envKeys = [
         "TERM_PROGRAM", "__CFBundleIdentifier", "ITERM_SESSION_ID", "TERM_SESSION_ID",
         "TMUX", "TMUX_PANE", "KITTY_WINDOW_ID", "KITTY_LISTEN_ON", "WEZTERM_PANE",
-        "ZELLIJ_SESSION_NAME", "WARP_FOCUS_URL",
+        "ZELLIJ_SESSION_NAME", "WARP_FOCUS_URL", "CLAUDE_CODE_ENTRYPOINT",
     ]
     private static let shells: Set<String> = ["sh", "bash", "zsh", "dash", "fish", "ksh", "env", "nohup"]
 

@@ -15,6 +15,16 @@ enum TerminalJumper {
 
     private static func perform(_ session: Session) {
         let terminal = session.terminal
+        switch terminal.desktopApp {
+        case .claude:
+            DispatchQueue.main.async { DesktopSessionIndex.open(desktopID: session.desktopID) }
+            return
+        case .chatgpt:
+            DispatchQueue.main.async { DesktopSessionIndex.openChatGPT(threadID: session.id) }
+            return
+        case nil:
+            break
+        }
         var outerTTY = terminal.tty
 
         // tmux: 패널 선택 후 tmux 클라이언트가 붙은 바깥 터미널의 tty로 이동
@@ -87,6 +97,7 @@ enum TerminalJumper {
 
     private static func deliver(_ text: String, to session: Session) -> SendResult {
         let terminal = session.terminal
+        if terminal.desktopApp != nil { return .failed("데스크톱 앱 세션은 앱에서 답장해 주세요") }
         if let pane = terminal.tmuxPane, let tmux = firstExisting(["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]) {
             if run(tmux, ["send-keys", "-t", pane, "-l", text]) != nil, run(tmux, ["send-keys", "-t", pane, "Enter"]) != nil {
                 return .sent
