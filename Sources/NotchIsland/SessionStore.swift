@@ -173,15 +173,20 @@ struct Peek: Identifiable {
     let body: String
 }
 
-struct RateWindow {
+struct RateWindow: Equatable {
     var usedPercent: Double
     var resetsAt: Date?
 }
 
-struct RateLimits {
+struct RateLimits: Equatable {
     var fiveHour: RateWindow?
     var sevenDay: RateWindow?
     var updatedAt = Date()
+
+    /// 갱신 시각은 비교하지 않는다 (같은 값이면 화면을 다시 그리지 않게)
+    static func == (a: RateLimits, b: RateLimits) -> Bool {
+        a.fiveHour == b.fiveHour && a.sevenDay == b.sevenDay
+    }
 }
 
 final class SessionStore: ObservableObject {
@@ -514,7 +519,12 @@ final class SessionStore: ObservableObject {
                 session.contextPercent = used
             }
             if session.terminal.isEmpty { session.terminal = TerminalInfo(terminal) }
-            sessions[sid] = session
+            // 상태줄은 자주 오므로 표시할 값이 바뀌었을 때만 반영
+            let current = sessions[sid]
+            if current == nil || current?.model != session.model || current?.contextPercent != session.contextPercent
+                || current?.cwd != session.cwd || current?.terminal.tty != session.terminal.tty {
+                sessions[sid] = session
+            }
         }
         if let limits = event["rate_limits"] as? [String: Any] {
             updateRateLimits(limits)
@@ -534,6 +544,7 @@ final class SessionStore: ObservableObject {
     /// 상태줄·사용량 API 어느 쪽에서 오든 같은 경로로 반영 (경고선 알림 포함)
     func applyRateLimits(_ limits: RateLimits) {
         let previous = rateLimits
+        if previous == limits { return }
         rateLimits = limits
 
         guard prefs.usageAlert else { return }

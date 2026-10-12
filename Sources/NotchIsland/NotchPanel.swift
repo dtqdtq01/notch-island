@@ -128,6 +128,8 @@ final class NotchPanelController {
             },
             onSettings: openSettings)
         let host = FirstMouseHostingView(rootView: root)
+        // 창 크기는 직접 관리한다 — SwiftUI가 매 업데이트마다 창 최소/최대 크기를 계산하지 않게
+        host.sizingOptions = []
         host.layer?.backgroundColor = .clear
         panel.contentView = host
         // 창은 크게 고정하고, 노치 밖 투명한 곳은 클릭이 아래(메뉴바 등)로 통과하게 한다

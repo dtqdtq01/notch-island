@@ -66,6 +66,10 @@ struct NotchRootView: View {
     let onToggle: () -> Void
     let onSilence: (Session, SilenceAction) -> Void
     let onSettings: () -> Void
+    /// 모양이 움직이는 동안에만 노치 모양으로 자른다.
+    /// 평소에는 사각형으로만 잘라서, 상태 점 애니메이션이 큰 마스크를 매 프레임 다시 그리지 않게 한다.
+    @State private var shaping = false
+    @State private var shapingEnd: DispatchWorkItem?
 
     var body: some View {
         let mode = model.mode
@@ -86,13 +90,22 @@ struct NotchRootView: View {
                     .animation(nil, value: size)
                     // 바깥 프레임은 스프링으로 커지고, 그 모양대로 잘라서 내용이 밖으로 새지 않게
                     .frame(width: size.width + top * 2, height: size.height, alignment: .top)
-                    .clipShape(shape)
+                    .clipShape(shaping ? AnyShape(shape) : AnyShape(Rectangle()))
             }
             .frame(width: size.width + top * 2, height: size.height)
+            .onChange(of: size) { _, _ in beginShaping() }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.colorScheme, .dark)
+    }
+
+    private func beginShaping() {
+        shaping = true
+        shapingEnd?.cancel()
+        let work = DispatchWorkItem { shaping = false }
+        shapingEnd = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: work)
     }
 
     @ViewBuilder
@@ -141,7 +154,13 @@ struct StatusDot: View {
             Circle()
                 .fill(status.color)
                 .shadow(color: status.color.opacity(active || urgent ? 0.8 : 0), radius: 3)
+                .frame(width: 8, height: 8)
         }
+        .frame(width: 8, height: 8)
+        // 링이 퍼질 공간을 두고, 점만 따로 GPU에서 그린다
+        // (안 그러면 매 프레임 옆의 글자까지 CPU에서 다시 그려 CPU를 많이 쓴다)
+        .frame(width: 20, height: 20)
+        .drawingGroup()
         .frame(width: 8, height: 8)
         .animation(.easeInOut(duration: 0.3), value: status)
         .onAppear { startBreathing() }
