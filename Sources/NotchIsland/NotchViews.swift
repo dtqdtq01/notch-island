@@ -1,25 +1,58 @@
 import SwiftUI
 
-/// 윗변은 각지고 아랫변만 둥근 노치 모양
+/// 노치 모양: 위쪽은 메뉴바로 이어지는 오목한 "귀", 아래쪽은 둥근 모서리.
+/// rect 너비 = 몸통 + 귀 두 개.
 struct NotchShape: Shape {
+    var topRadius: CGFloat
     var bottomRadius: CGFloat
 
-    var animatableData: CGFloat {
-        get { bottomRadius }
-        set { bottomRadius = newValue }
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(topRadius, bottomRadius) }
+        set { topRadius = newValue.first; bottomRadius = newValue.second }
     }
 
     func path(in rect: CGRect) -> Path {
-        let r = min(bottomRadius, rect.height / 2, rect.width / 2)
+        let t = min(topRadius, rect.width / 4, rect.height / 2)
+        let b = min(bottomRadius, (rect.width - 2 * t) / 2, rect.height - t)
         var path = Path()
         path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
-        path.addQuadCurve(to: CGPoint(x: rect.maxX - r, y: rect.maxY), control: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
-        path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY - r), control: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addQuadCurve(to: CGPoint(x: rect.minX + t, y: rect.minY + t), control: CGPoint(x: rect.minX + t, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + t, y: rect.maxY - b))
+        path.addQuadCurve(to: CGPoint(x: rect.minX + t + b, y: rect.maxY), control: CGPoint(x: rect.minX + t, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - t - b, y: rect.maxY))
+        path.addQuadCurve(to: CGPoint(x: rect.maxX - t, y: rect.maxY - b), control: CGPoint(x: rect.maxX - t, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - t, y: rect.minY + t))
+        path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY), control: CGPoint(x: rect.maxX - t, y: rect.minY))
         path.closeSubpath()
         return path
+    }
+}
+
+/// 노치 전체가 공유하는 움직임
+enum NotchMotion {
+    /// 펼침/접힘: 살짝 튕기는 스프링
+    static let spring = Animation.spring(response: 0.42, dampingFraction: 0.8)
+    /// 목록·카드 변화
+    static let snappy = Animation.spring(response: 0.32, dampingFraction: 0.86)
+    /// 내용은 모양이 어느 정도 열린 뒤 나타나고, 닫힐 땐 먼저 사라진다
+    static let contentIn = AnyTransition.asymmetric(
+        insertion: .blurFade.animation(.easeOut(duration: 0.24).delay(0.07)),
+        removal: .blurFade.animation(.easeIn(duration: 0.1)))
+}
+
+private struct BlurFade: ViewModifier {
+    let active: Bool
+    func body(content: Content) -> some View {
+        content
+            .blur(radius: active ? 8 : 0)
+            .opacity(active ? 0 : 1)
+            .scaleEffect(active ? 0.96 : 1, anchor: .top)
+    }
+}
+
+extension AnyTransition {
+    static var blurFade: AnyTransition {
+        .modifier(active: BlurFade(active: true), identity: BlurFade(active: false))
     }
 }
 
@@ -35,46 +68,90 @@ struct NotchRootView: View {
     let onSettings: () -> Void
 
     var body: some View {
-        ZStack(alignment: .top) {
-            NotchShape(bottomRadius: model.mode == .collapsed ? 10 : 22)
-                .fill(Color.black)
-            switch model.mode {
-            case .collapsed:
-                CollapsedView(store: store, notchWidth: model.geometry.notchWidth)
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: onToggle)
-            case .peek:
-                if let peek = store.peek {
-                    PeekView(peek: peek)
-                        .padding(.top, model.geometry.notchHeight + 4)
-                        .padding(.horizontal, 16)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if let sid = peek.sessionID, let session = store.sessions[sid] { onJump(session) }
-                            store.clearPeek()
-                        }
-                }
-            case .expanded:
-                ExpandedView(store: store, model: model, prefs: prefs, onJump: onJump, onSilence: onSilence, onSettings: onSettings)
+        let mode = model.mode
+        let size = model.size
+        let top = Metrics.topRadius(mode)
+        let shape = NotchShape(topRadius: top, bottomRadius: Metrics.bottomRadius(mode))
+        let open = mode != .collapsed
+
+        VStack(spacing: 0) {
+            ZStack(alignment: .top) {
+                shape
+                    .fill(Color.black)
+                    .shadow(color: .black.opacity(open ? 0.5 : 0), radius: open ? 18 : 0, y: open ? 8 : 0)
+                // 내용은 최종 크기로 한 번에 배치하고, 늘어나는 모양이 잘라서 드러낸다 (글자가 찌그러지지 않게)
+                content(mode)
+                    .padding(.horizontal, top)
+                    .frame(width: size.width + top * 2, height: size.height, alignment: .top)
+                    .animation(nil, value: size)
+                    // 바깥 프레임은 스프링으로 커지고, 그 모양대로 잘라서 내용이 밖으로 새지 않게
+                    .frame(width: size.width + top * 2, height: size.height, alignment: .top)
+                    .clipShape(shape)
             }
+            .frame(width: size.width + top * 2, height: size.height)
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.colorScheme, .dark)
+    }
+
+    @ViewBuilder
+    private func content(_ mode: NotchMode) -> some View {
+        switch mode {
+        case .collapsed:
+            CollapsedView(store: store, notchWidth: model.geometry.notchWidth)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onToggle)
+                .transition(.opacity.animation(.easeOut(duration: 0.15)))
+        case .peek:
+            if let peek = store.peek {
+                PeekView(peek: peek)
+                    .padding(.top, model.geometry.notchHeight + 4)
+                    .padding(.horizontal, 16)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if let sid = peek.sessionID, let session = store.sessions[sid] { onJump(session) }
+                        store.clearPeek()
+                    }
+                    .transition(NotchMotion.contentIn)
+            }
+        case .expanded:
+            ExpandedView(store: store, model: model, prefs: prefs, onJump: onJump, onSilence: onSilence, onSettings: onSettings)
+                .transition(NotchMotion.contentIn)
+        }
     }
 }
 
 struct StatusDot: View {
     let status: SessionStatus
-    @State private var pulse = false
+    @State private var breathe = false
+
+    private var active: Bool { status == .running || status == .compacting }
+    private var urgent: Bool { status == .waitingApproval || status == .waitingInput }
 
     var body: some View {
-        Circle()
-            .fill(status.color)
-            .frame(width: 8, height: 8)
-            .opacity((status == .running || status == .compacting) && pulse ? 0.35 : 1)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.8).repeatForever()) { pulse = true }
+        ZStack {
+            // 작업 중·대기 중이면 바깥 링이 퍼졌다 사라진다
+            if active || urgent {
+                Circle()
+                    .stroke(status.color, lineWidth: 1.5)
+                    .scaleEffect(breathe ? 2.2 : 1)
+                    .opacity(breathe ? 0 : 0.8)
             }
+            Circle()
+                .fill(status.color)
+                .shadow(color: status.color.opacity(active || urgent ? 0.8 : 0), radius: 3)
+        }
+        .frame(width: 8, height: 8)
+        .animation(.easeInOut(duration: 0.3), value: status)
+        .onAppear { startBreathing() }
+        .onChange(of: status) { _, _ in startBreathing() }
+    }
+
+    private func startBreathing() {
+        breathe = false
+        guard active || urgent else { return }
+        withAnimation(.easeOut(duration: urgent ? 0.9 : 1.4).repeatForever(autoreverses: false)) { breathe = true }
     }
 }
 
@@ -96,6 +173,9 @@ struct CollapsedView: View {
                     }
                 }
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .contentTransition(.numericText())
+                .animation(NotchMotion.snappy, value: store.sessions.count)
+                .animation(NotchMotion.snappy, value: store.pending.count)
                 .frame(width: Metrics.sideWidth)
             }
             .frame(maxHeight: .infinity)
@@ -161,6 +241,9 @@ struct ExpandedView: View {
                 RequestCard(store: store, request: request)
                     .id(request.id)
                     .frame(height: Metrics.cardHeight(request))
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity),
+                        removal: .scale(scale: 0.94).combined(with: .opacity)))
             }
             if store.sessions.isEmpty {
                 Text("실행 중인 에이전트 세션 없음")
@@ -176,6 +259,7 @@ struct ExpandedView: View {
                                     session: session, index: index, prefs: prefs,
                                     highlighted: model.switcherIndex == index)
                                     .id(session.id)
+                                    .transition(.move(edge: .top).combined(with: .opacity))
                                     .contentShape(Rectangle())
                                     .onTapGesture { if !prefs.disableClickToJump { onJump(session) } }
                                     .contextMenu {
@@ -202,6 +286,9 @@ struct ExpandedView: View {
         .padding(.top, model.geometry.notchHeight + 2)
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
+        .animation(NotchMotion.snappy, value: store.pending.first?.id)
+        .animation(NotchMotion.snappy, value: store.sortedSessions.map(\.id))
+        .animation(NotchMotion.snappy, value: model.switcherIndex)
     }
 }
 
@@ -287,6 +374,8 @@ struct SessionRow: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .contentTransition(.opacity)
+                    .animation(.easeInOut(duration: 0.2), value: session.detail)
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 2) {
@@ -586,5 +675,7 @@ struct PillButton: ButtonStyle {
             .padding(.vertical, compact ? 3 : 6)
             .background(Capsule().fill(tint.opacity(configuration.isPressed ? 0.5 : 0.28)))
             .foregroundStyle(.white)
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .animation(.spring(response: 0.2, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }

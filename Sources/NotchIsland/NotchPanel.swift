@@ -35,6 +35,17 @@ enum Metrics {
     static let rowHeight: CGFloat = 48
     static let maxRows = 6
     static let peekHeight: CGFloat = 76
+    /// 메뉴바와 이어지는 위쪽 오목한 모서리
+    static func topRadius(_ mode: NotchMode) -> CGFloat { mode == .collapsed ? 6 : 14 }
+    static func bottomRadius(_ mode: NotchMode) -> CGFloat {
+        switch mode {
+        case .collapsed: return 10
+        case .peek: return 22
+        case .expanded: return 26
+        }
+    }
+    /// 그림자가 잘리지 않도록 창에 두는 여백
+    static let shadowMargin: CGFloat = 40
 
     static func cardHeight(_ request: PendingRequest) -> CGFloat {
         switch request.kind {
@@ -49,6 +60,8 @@ enum Metrics {
 
 final class NotchViewModel: ObservableObject {
     @Published var mode: NotchMode = .collapsed
+    /// 노치 몸통의 목표 크기 (위쪽 귀 제외). 뷰가 스프링으로 따라간다.
+    @Published var size: CGSize = .zero
     @Published var hovering = false
     @Published var pinned = false
     @Published var switcherIndex: Int?
@@ -74,26 +87,9 @@ final class NotchPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// 첫 클릭도 바로 버튼에 전달하고, 창이 key가 아니어도 hover를 감지하는 호스팅 뷰.
-final class HoverHostingView<Content: View>: NSHostingView<Content> {
-    var onHoverChange: ((Bool) -> Void)?
-    private var trackingArea: NSTrackingArea?
-
+/// 첫 클릭도 바로 버튼에 전달하는 호스팅 뷰
+final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let trackingArea { removeTrackingArea(trackingArea) }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self)
-        addTrackingArea(area)
-        trackingArea = area
-    }
-
-    override func mouseEntered(with event: NSEvent) { onHoverChange?(true) }
-    override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
 }
 
 final class NotchPanelController {
@@ -103,8 +99,10 @@ final class NotchPanelController {
     private let quiet: QuietMonitor
     let model = NotchViewModel()
     private var cancellables = Set<AnyCancellable>()
-    private var collapseWork: DispatchWorkItem?
+    private var hoverWork: DispatchWorkItem?
     private var lastFrame: NSRect = .zero
+    private var mouseMonitors: [Any] = []
+    private var mouseInside = false
     private var keyMonitor: Any?
     private var clickMonitor: Any?
     private var frontIsFullscreen = false
@@ -126,9 +124,13 @@ final class NotchPanelController {
                 }
             },
             onSettings: openSettings)
-        let host = HoverHostingView(rootView: root)
-        host.onHoverChange = { [weak self] inside in self?.hoverChanged(inside) }
+        let host = FirstMouseHostingView(rootView: root)
+        host.layer?.backgroundColor = .clear
         panel.contentView = host
+        // 창은 크게 고정하고, 노치 밖 투명한 곳은 클릭이 아래(메뉴바 등)로 통과하게 한다
+        panel.ignoresMouseEvents = true
+        panel.acceptsMouseMovedEvents = true
+        installMouseTracking()
 
         store.objectWillChange
             .merge(with: model.objectWillChange, prefs.objectWillChange, quiet.objectWillChange)
@@ -137,7 +139,10 @@ final class NotchPanelController {
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
-            .sink { [weak self] _ in self?.model.geometry = NotchGeometry.current() }
+            .sink { [weak self] _ in
+                self?.model.geometry = NotchGeometry.current()
+                self?.lastFrame = .zero
+            }
             .store(in: &cancellables)
 
         let workspace = NSWorkspace.shared.notificationCenter
@@ -225,19 +230,53 @@ final class NotchPanelController {
         appBeforeSwitcher = nil
     }
 
-    // MARK: - 레이아웃
+    // MARK: - 마우스 추적
 
-    private func hoverChanged(_ inside: Bool) {
-        collapseWork?.cancel()
-        if inside {
-            if prefs.expandOnHover { model.hovering = true }
-        } else {
-            // 패널이 줄어들며 생기는 깜빡임 방지용 짧은 유예
-            let work = DispatchWorkItem { [weak self] in self?.model.hovering = false }
-            collapseWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    private func installMouseTracking() {
+        let types: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: types, handler: { [weak self] _ in self?.trackMouse() }) {
+            mouseMonitors.append(global)
+        }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: types, handler: { [weak self] event in
+            self?.trackMouse()
+            return event
+        }) {
+            mouseMonitors.append(local)
         }
     }
+
+    /// 지금 보이는 노치 영역 (화면 좌표)
+    private var visibleRect: NSRect {
+        let screen = model.geometry.screen.frame
+        let width = model.size.width + Metrics.topRadius(model.mode) * 2
+        return NSRect(x: screen.midX - width / 2, y: screen.maxY - model.size.height, width: width, height: model.size.height)
+    }
+
+    private func trackMouse() {
+        let inside = visibleRect.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
+        if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
+        guard inside != mouseInside else { return }
+        mouseInside = inside
+        hoverChanged(inside)
+    }
+
+    private func hoverChanged(_ inside: Bool) {
+        hoverWork?.cancel()
+        // 스쳐 지나갈 때 튀어나오지 않도록 펼침은 짧게 기다리고, 접힘은 조금 더 여유를 둔다
+        let delay = inside ? 0.08 : 0.32
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if inside {
+                if self.prefs.expandOnHover { self.model.hovering = true }
+            } else {
+                self.model.hovering = false
+            }
+        }
+        hoverWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    // MARK: - 레이아웃
 
     private func desiredMode() -> NotchMode {
         if model.switcherIndex != nil || model.pinned || model.hovering { return .expanded }
@@ -250,24 +289,35 @@ final class NotchPanelController {
 
     private func layout() {
         let mode = desiredMode()
-        if model.mode != mode { model.mode = mode }
-
         let size: CGSize
         switch mode {
         case .collapsed: size = collapsedSize()
         case .peek: size = CGSize(width: Metrics.expandedWidth - 80, height: model.geometry.notchHeight + Metrics.peekHeight)
         case .expanded: size = expandedSize()
         }
-        let screenFrame = model.geometry.screen.frame
-        let frame = NSRect(
-            x: (screenFrame.midX - size.width / 2).rounded(),
-            y: screenFrame.maxY - size.height,
-            width: size.width, height: size.height)
+        // 모드와 크기를 같은 트랜잭션에서 바꿔야 스프링이 한 번에 움직인다
+        if model.mode != mode || model.size != size {
+            withAnimation(NotchMotion.spring) {
+                model.mode = mode
+                model.size = size
+            }
+        }
+        placePanel()
+        updateVisibility(mode: mode)
+        trackMouse()
+    }
+
+    /// 창은 펼쳤을 때의 최대 크기로 고정 — 노치 모양만 안에서 애니메이션된다
+    private func placePanel() {
+        let g = model.geometry
+        let screen = g.screen.frame
+        let width = max(Metrics.expandedWidth, g.notchWidth + 140) + Metrics.topRadius(.expanded) * 2 + Metrics.shadowMargin * 2
+        let height = screen.height * 0.8 + Metrics.shadowMargin
+        let frame = NSRect(x: (screen.midX - width / 2).rounded(), y: screen.maxY - height, width: width, height: height)
         if frame != lastFrame {
             lastFrame = frame
             panel.setFrame(frame, display: true)
         }
-        updateVisibility(mode: mode)
     }
 
     private func updateVisibility(mode: NotchMode) {
