@@ -41,3 +41,8 @@ Claude statusLine → notch-bridge --statusline → 모델/컨텍스트/사용 �
 
 ## 아직 없는 것
 OpenCode·Gemini 등 다른 에이전트, SSH 원격 세션, Claude OAuth 사용량 API(상태줄 방식만 지원), 펼침 애니메이션
+
+## 문제 해결
+`touch ~/.notch-island/debug` 후 세션을 돌리면 `~/.notch-island/bridge.log`에 훅 호출이 남는다
+(이벤트 이름·실행 출처·실행 앱·세션 ID 앞 8자리만, 경로·내용 없음). 끝나면 `rm ~/.notch-island/debug`.
+

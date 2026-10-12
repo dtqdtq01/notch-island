@@ -205,6 +205,25 @@ guard !input.isEmpty,
       let eventName = event["hook_event_name"] as? String
 else { exit(0) }
 
+/// ~/.notch-island/debug 파일이 있을 때만 호출 기록을 남긴다 (경로·내용은 남기지 않음)
+func debugLog(_ eventName: String, _ terminal: [String: Any], _ event: [String: Any], note: String) {
+    let root = NotchPaths.root
+    guard FileManager.default.fileExists(atPath: root.appendingPathComponent("debug").path) else { return }
+    let sid = (event["session_id"] as? String).map { String($0.prefix(8)) } ?? "-"
+    let bundles = (terminal["ancestor_bundles"] as? [String] ?? []).joined(separator: ",")
+    let line = "\(ISO8601DateFormatter().string(from: Date())) \(eventName) src=\(source) sid=\(sid) "
+        + "tty=\(terminal["tty"] != nil) entry=\(terminal["CLAUDE_CODE_ENTRYPOINT"] as? String ?? "-") "
+        + "bundles=[\(bundles)] \(note)\n"
+    let url = root.appendingPathComponent("bridge.log")
+    if let handle = try? FileHandle(forWritingTo: url) {
+        handle.seekToEndOfFile()
+        handle.write(Data(line.utf8))
+        try? handle.close()
+    } else {
+        try? Data(line.utf8).write(to: url)
+    }
+}
+
 // 사용자가 끈 세션 (예: NOTCH_ISLAND_SKIP=1 claude -p ...)
 if ProcessInfo.processInfo.environment["NOTCH_ISLAND_SKIP"] != nil { exit(0) }
 
@@ -214,7 +233,11 @@ if ["SessionStart", "UserPromptSubmit", "Stop", "Notification"].contains(eventNa
     TitleMarker.write(sessionID: sessionID, cwd: event["cwd"] as? String, tty: terminal["tty"] as? String)
 }
 
-guard let fd = send(slimmed(event), terminal: terminal) else { exit(0) }
+guard let fd = send(slimmed(event), terminal: terminal) else {
+    debugLog(eventName, terminal, event, note: "app-unreachable")
+    exit(0)
+}
+debugLog(eventName, terminal, event, note: "sent")
 
 if eventName == "PermissionRequest" {
     // 앱이 결정을 보낼 때까지 블록. 사용자가 터미널에서 먼저 답하면 에이전트가 이 프로세스를 정리한다.
