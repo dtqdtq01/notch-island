@@ -311,6 +311,9 @@ final class SessionStore: ObservableObject {
         livenessTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             self?.reapDeadSessions()
         }
+        // 깨우는 시점을 다른 타이머와 묶을 수 있게 여유를 준다
+        pruneTimer?.tolerance = 10
+        livenessTimer?.tolerance = 2
         loadCachedRateLimits()
     }
 

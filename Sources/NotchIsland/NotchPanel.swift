@@ -107,6 +107,7 @@ final class NotchPanelController {
     private var hoverWork: DispatchWorkItem?
     private var lastFrame: NSRect = .zero
     private var mouseMonitors: [Any] = []
+    private var mousePoll: Timer?
     private var mouseInside = false
     private var keyMonitor: Any?
     private var clickMonitor: Any?
@@ -151,6 +152,7 @@ final class NotchPanelController {
         panel.ignoresMouseEvents = true
         panel.acceptsMouseMovedEvents = true
         installMouseTracking()
+        scheduleMousePoll()
 
         store.objectWillChange
             .merge(with: model.objectWillChange, prefs.objectWillChange, quiet.objectWillChange)
@@ -271,10 +273,9 @@ final class NotchPanelController {
     // MARK: - 마우스 추적
 
     private func installMouseTracking() {
+        // 전역 마우스 이동 감시는 화면 전체의 이동 이벤트를 받느라 CPU를 쓴다.
+        // 대신 커서 위치를 주기적으로 확인하고, 노치 안에서는 우리 창으로 오는 이벤트만 받는다.
         let types: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
-        if let global = NSEvent.addGlobalMonitorForEvents(matching: types, handler: { [weak self] _ in self?.trackMouse() }) {
-            mouseMonitors.append(global)
-        }
         if let local = NSEvent.addLocalMonitorForEvents(matching: types, handler: { [weak self] event in
             self?.trackMouse()
             return event
@@ -307,10 +308,29 @@ final class NotchPanelController {
         }
         let inside = visibleRect.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
         if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
+        defer { scheduleMousePoll() }
         guard inside != mouseInside else { return }
         mouseInside = inside
         hoverChanged(inside)
     }
+
+    /// 노치 근처에서는 촘촘히, 멀리 있으면 느슨하게 커서 위치를 확인한다
+    private func scheduleMousePoll() {
+        let near = mouseInside || model.mode != .collapsed
+            || visibleRect.insetBy(dx: -Self.nearDistance, dy: -Self.nearDistance).contains(NSEvent.mouseLocation)
+        let interval = near ? Self.nearPollInterval : Self.farPollInterval
+        if let mousePoll, mousePoll.isValid, mousePoll.timeInterval == interval { return }
+        mousePoll?.invalidate()
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.trackMouse() }
+        timer.tolerance = interval * 0.2
+        // 메뉴 추적·드래그 중에도 돌도록 common 모드에 건다
+        RunLoop.main.add(timer, forMode: .common)
+        mousePoll = timer
+    }
+
+    private static let nearDistance: CGFloat = 200
+    private static let nearPollInterval: TimeInterval = 0.05
+    private static let farPollInterval: TimeInterval = 0.2
 
     private func hoverChanged(_ inside: Bool) {
         hoverWork?.cancel()

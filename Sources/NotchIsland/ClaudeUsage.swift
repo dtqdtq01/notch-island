@@ -34,6 +34,7 @@ final class ClaudeUsageFetcher: ObservableObject {
         self.prefs = prefs
         self.store = store
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.tick() }
+        timer?.tolerance = 10
         tick()
     }
 

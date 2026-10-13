@@ -26,6 +26,7 @@ final class QuietMonitor: ObservableObject {
         self.prefs = prefs
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
+        timer?.tolerance = 1
     }
 
     var isQuiet: Bool {
@@ -62,15 +63,21 @@ final class HookWatcher {
     private var timer: Timer?
     private var repairs: [Date] = []
     private var gaveUp = false
+    /// 마지막으로 확인한 설정 파일 상태. 그대로면 JSON을 다시 읽지 않는다.
+    private var checkedSignature: [String]?
 
     init(prefs: Prefs, store: SessionStore) {
         self.prefs = prefs
         self.store = store
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.check() }
+        timer?.tolerance = 1.5
     }
 
     func check() {
         guard prefs.autoRepairHooks, !gaveUp else { return }
+        let signature = Self.signature(prefs.managedIntegrations)
+        guard signature != checkedSignature else { return }
+        defer { checkedSignature = Self.signature(prefs.managedIntegrations) }
         var restored: [String] = []
         for id in prefs.managedIntegrations {
             do {
@@ -100,8 +107,17 @@ final class HookWatcher {
         }
     }
 
+    private static func signature(_ ids: [String]) -> [String] {
+        let files = Integrations.Agent.allCases.map(\.configFile)
+        return ids.sorted() + files.map { file in
+            let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            return "\(values?.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0):\(values?.fileSize ?? -1)"
+        }
+    }
+
     /// 사용자가 연동 화면에서 다시 손대면 자동 복구 재개
     func reset() {
+        checkedSignature = nil
         gaveUp = false
         repairs.removeAll()
     }
@@ -120,6 +136,7 @@ final class IdleWatcher {
         self.store = store
         self.onSound = onSound
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.check() }
+        timer?.tolerance = 1.5
     }
 
     /// 마지막 키보드·마우스 입력 이후 초

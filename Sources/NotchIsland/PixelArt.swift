@@ -121,10 +121,6 @@ struct AgentIcon: View {
         }
         .opacity(faded ? 0.45 : 1)
         .shadow(color: glows ? color.opacity(0.7) : .clear, radius: 4)
-        // 스피너가 돌아도 옆의 글자는 다시 그리지 않도록 아이콘만 따로 GPU에서 그린다
-        .padding(4)
-        .drawingGroup()
-        .padding(-4)
         .animation(.easeInOut(duration: 0.25), value: status)
     }
 
@@ -147,28 +143,85 @@ struct AgentIcon: View {
     }
 }
 
-/// 3×3 격자에서 불빛이 시계 방향으로 도는 스피너 (초당 약 8프레임 — CPU를 거의 안 쓴다)
-struct PixelSpinner: View {
+/// 3×3 격자에서 불빛이 시계 방향으로 도는 스피너.
+/// Core Animation 레이어 애니메이션으로 돌려서 프레임마다 SwiftUI 레이아웃·렌더가 일어나지 않는다.
+struct PixelSpinner: NSViewRepresentable {
     let color: Color
     var cell: CGFloat = 2
-    private static let order = [0, 1, 2, 5, 8, 7, 6, 3]
 
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.12)) { timeline in
-            let step = Int(timeline.date.timeIntervalSinceReferenceDate / 0.12) % Self.order.count
-            Canvas { context, _ in
-                let size = cell * 1.5
-                let gap = cell * 0.5
-                for index in 0..<9 {
-                    let x = CGFloat(index % 3) * (size + gap)
-                    let y = CGFloat(index / 3) * (size + gap) + cell * 2
-                    // 머리와 꼬리 두 칸은 밝게, 나머지는 어둡게
-                    let distance = (Self.order.firstIndex(of: index).map { (step - $0 + 8) % 8 }) ?? 99
-                    let alpha: Double = index == 4 ? 0.25 : distance == 0 ? 1 : distance == 1 ? 0.6 : 0.2
-                    context.fill(Path(CGRect(x: x, y: y, width: size, height: size)), with: .color(color.opacity(alpha)))
-                }
+    func makeNSView(context: Context) -> PixelSpinnerView { PixelSpinnerView() }
+
+    func updateNSView(_ view: PixelSpinnerView, context: Context) {
+        view.configure(color: NSColor(color).cgColor, cell: cell)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: PixelSpinnerView, context: Context) -> CGSize? {
+        CGSize(width: cell * 5.5, height: cell * 7)
+    }
+}
+
+final class PixelSpinnerView: NSView {
+    private static let order = [0, 1, 2, 5, 8, 7, 6, 3]
+    private static let frameTime: CFTimeInterval = 0.12
+    private let cells: [CALayer] = (0..<9).map { _ in CALayer() }
+    private var cell: CGFloat = 0
+    private var color: CGColor?
+
+    init() {
+        super.init(frame: .zero)
+        // 레이어 호스팅: AppKit이 레이어를 다시 만들거나 다시 그리지 않는다
+        layer = CALayer()
+        wantsLayer = true
+        for sublayer in cells { layer?.addSublayer(sublayer) }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func configure(color: CGColor, cell: CGFloat) {
+        guard color != self.color || cell != self.cell else { return }
+        self.color = color
+        self.cell = cell
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let size = cell * 1.5, gap = cell * 0.5, height = cell * 7
+        for (index, sublayer) in cells.enumerated() {
+            let x = CGFloat(index % 3) * (size + gap)
+            let y = CGFloat(index / 3) * (size + gap) + cell * 2
+            // 레이어 좌표는 아래에서 위로
+            sublayer.frame = CGRect(x: x, y: height - y - size, width: size, height: size)
+            sublayer.backgroundColor = color
+            sublayer.opacity = index == 4 ? 0.25 : 0.2
+        }
+        CATransaction.commit()
+        startAnimating()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { startAnimating() }
+    }
+
+    private func startAnimating() {
+        let count = Self.order.count
+        let period = Self.frameTime * Double(count)
+        // 모든 스피너가 같은 박자로 돌도록 시계에 맞춘다
+        let phase = CACurrentMediaTime().truncatingRemainder(dividingBy: period)
+        for (position, index) in Self.order.enumerated() {
+            let animation = CAKeyframeAnimation(keyPath: "opacity")
+            animation.calculationMode = .discrete
+            // 머리와 꼬리 두 칸은 밝게, 나머지는 어둡게
+            animation.values = (0..<count).map { step -> Float in
+                let distance = (step - position + count) % count
+                return distance == 0 ? 1 : distance == 1 ? 0.6 : 0.2
             }
-            .frame(width: cell * 5.5, height: cell * 7)
+            animation.keyTimes = (0...count).map { NSNumber(value: Double($0) / Double(count)) }
+            animation.duration = period
+            animation.repeatCount = .infinity
+            animation.timeOffset = phase
+            animation.isRemovedOnCompletion = false
+            cells[index].add(animation, forKey: "spin")
         }
     }
 }
