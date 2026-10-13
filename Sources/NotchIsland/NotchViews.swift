@@ -163,12 +163,12 @@ struct CollapsedView: View {
                 HStack(spacing: 8) {
                     AgentIcon(source: top.source, status: top.status, unread: top.unread, cell: 1.6)
                     if detailed {
+                        // 글자 전환 효과(contentTransition)는 넣지 않는다 — 바뀔 때마다 렌더러에 글리프 비트맵이 쌓여 메모리가 계속 는다
                         Text(top.activity)
                             .font(NotchFonts.pixel(13))
                             .foregroundStyle(.white.opacity(0.92))
                             .lineLimit(1)
                             .truncationMode(.tail)
-                            .contentTransition(.opacity)
                     }
                 }
                 .padding(.leading, detailed ? 14 : 0)
@@ -192,7 +192,6 @@ struct CollapsedView: View {
             }
             .frame(maxHeight: .infinity)
             .animation(NotchMotion.snappy, value: store.sessions.count)
-            .animation(.easeInOut(duration: 0.2), value: top.activity)
         } else {
             Color.clear
         }
@@ -383,7 +382,6 @@ struct SessionHeader: View {
                         .font(NotchStyle.body)
                         .foregroundStyle(NotchStyle.faint)
                         .lineLimit(1)
-                        .contentTransition(.opacity)
                 }
             }
         }

@@ -33,13 +33,16 @@ final class Responder {
     }
 }
 
-/// ~/.notch-island/run/notch.sock 에서 bridge 연결을 받는다. 연결마다 스레드 하나.
+/// ~/.notch-island/run/notch.sock 에서 bridge 연결을 받는다.
+/// 일반 이벤트는 큐에서 짧게 처리하고, 결정을 오래 기다리는 PermissionRequest만 전용 스레드를 쓴다.
+/// (연결마다 Thread를 만들면 스레드마다 생기는 run loop 메모리가 해제되지 않고 쌓인다)
 final class SocketServer {
     enum StartError: Error { case alreadyRunning, socket(String) }
 
     private let path = NotchPaths.socket
     private var listenFD: Int32 = -1
     private let store: SessionStore
+    private let queue = DispatchQueue(label: "notch.socket", qos: .userInitiated, attributes: .concurrent)
 
     init(store: SessionStore) { self.store = store }
 
@@ -88,12 +91,13 @@ final class SocketServer {
                 continue
             }
             UnixSocket.disableSigpipe(client)
-            let thread = Thread { [weak self] in self?.handle(client) }
-            thread.start()
+            queue.async { [weak self] in self?.handle(client) }
         }
     }
 
     private func handle(_ client: Int32) {
+        // bridge는 연결하자마자 한 줄을 보낸다. 아무것도 안 오면 큐 스레드를 오래 붙잡지 않는다.
+        Self.setReadTimeout(client, seconds: 5)
         let reader = LineReader(fd: client)
         guard let line = reader.readLine(),
               let envelope = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
@@ -113,10 +117,21 @@ final class SocketServer {
         DispatchQueue.main.async {
             self.store.ingestPermission(event, source: source, terminal: terminal, id: id, responder: responder)
         }
-        // bridge가 응답을 받고 끝나거나, Claude가 bridge를 죽이면 EOF가 온다.
-        while reader.readLine() != nil {}
-        responder.markClosed()
-        close(client)
-        DispatchQueue.main.async { self.store.permissionConnectionClosed(id) }
+        // 결정까지 몇 시간 걸릴 수 있어 공용 큐 스레드를 붙잡지 않도록 전용 스레드에서 기다린다
+        Self.setReadTimeout(client, seconds: 0)
+        let thread = Thread { [weak self] in
+            // bridge가 응답을 받고 끝나거나, Claude가 bridge를 죽이면 EOF가 온다.
+            while reader.readLine() != nil {}
+            responder.markClosed()
+            close(client)
+            DispatchQueue.main.async { self?.store.permissionConnectionClosed(id) }
+        }
+        thread.start()
+    }
+
+    /// 0이면 제한 없음
+    private static func setReadTimeout(_ fd: Int32, seconds: Int) {
+        var timeout = timeval(tv_sec: seconds, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
     }
 }
